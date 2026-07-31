@@ -1,16 +1,14 @@
 # RichListview — full custom ListView control for classic AmigaOS
 #
-# Extracted from amiga_custom_listview (custom_listview_control package).
-# This Makefile builds ONLY the custom control + demo. It does not include
-# the legacy GadTools LISTVIEW_KIND enhancer, ASCII formatter, binders,
-# selection adapter, or clv_cellctl implementation.
+# Builds ONLY the custom control + demo. Does not include the legacy
+# GadTools LISTVIEW_KIND enhancer, ASCII formatter, binders, selection
+# adapter, or clv_cellctl implementation.
 #
-# VBCC +aos68k does NOT predefine __AMIGA__; -DCLV_PLATFORM_AMIGA=1 drives
-# the central platform assert. Public API still uses CLV_* / clv_control_*
-# names until a later rename phase.
+# VBCC +aos68k does NOT predefine __AMIGA__; -DRLV_PLATFORM_AMIGA=1 drives
+# the central platform assert. Public API uses RLV_* / rlv_*.
 
 CC := vc
-CFLAGS := +aos68k -c99 -cpu=68000 -O2 -size -Isrc -DCLV_PLATFORM_AMIGA=1
+CFLAGS := +aos68k -c99 -cpu=68000 -O2 -size -Isrc -DRLV_PLATFORM_AMIGA=1
 LDFLAGS := +aos68k -cpu=68000 -O2 -size -final -lamiga -lauto
 
 BUILD_DIR := build
@@ -18,132 +16,170 @@ BIN_DIR := bin
 
 # Smart vertical scrolling (pixel shift + exposed-band regional paint).
 # 0 = always full-viewport scroll paint.
-CLV_ENABLE_SMART_SCROLL ?= 1
+RLV_ENABLE_SMART_SCROLL ?= 1
 
-# Optional crash-safe PROGDIR logger for custom-control-demo-log only.
-CLV_ENABLE_LOGGING ?= 0
+# Optional crash-safe PROGDIR logger for rich-listview-demo-log only.
+RLV_ENABLE_LOGGING ?= 0
 
-CLV_CTRL_CFLAGS = $(CFLAGS) -DCLV_ENABLE_SMART_SCROLL=$(CLV_ENABLE_SMART_SCROLL)
-CLV_CTRL_LOG_CFLAGS = $(CFLAGS) -DCLV_ENABLE_LOGGING -DCLV_ENABLE_SMART_SCROLL=$(CLV_ENABLE_SMART_SCROLL)
-CLV_CTRL_BENCH_CFLAGS = $(CFLAGS) -DCLV_ENABLE_BENCHMARKS -DCLV_ENABLE_SMART_SCROLL=$(CLV_ENABLE_SMART_SCROLL)
+RLV_CFLAGS = $(CFLAGS) -DRLV_ENABLE_SMART_SCROLL=$(RLV_ENABLE_SMART_SCROLL)
+RLV_LOG_CFLAGS = $(CFLAGS) -DRLV_ENABLE_LOGGING -DRLV_ENABLE_SMART_SCROLL=$(RLV_ENABLE_SMART_SCROLL)
+RLV_BENCH_CFLAGS = $(CFLAGS) -DRLV_ENABLE_BENCHMARKS -DRLV_ENABLE_SMART_SCROLL=$(RLV_ENABLE_SMART_SCROLL)
+RLV_NOSMART_CFLAGS = $(CFLAGS) -DRLV_ENABLE_SMART_SCROLL=0
 
-CLV_CTRL_LOG_DIR = $(BUILD_DIR)/rich_listview_log
-CLV_CTRL_BENCH_DIR = $(BUILD_DIR)/rich_listview_bench
+RLV_LOG_DIR = $(BUILD_DIR)/rich_listview_log
+RLV_BENCH_DIR = $(BUILD_DIR)/rich_listview_bench
+RLV_NOSMART_DIR = $(BUILD_DIR)/rich_listview_nosmart
 
 # ---------------------------------------------------------------------------
 # Explicit object lists (no wildcards)
 # ---------------------------------------------------------------------------
 
-CLV_PLATFORM_OBJS = $(BUILD_DIR)/rich_listview/clv_platform.o
+RLV_PLATFORM_OBJS = $(BUILD_DIR)/rich_listview/rlv_platform.o
 
-CLV_CUSTOM_CONTROL_OBJS = \
-	$(BUILD_DIR)/rich_listview/clv_control.o \
-	$(BUILD_DIR)/rich_listview/clv_control_layout.o \
-	$(BUILD_DIR)/rich_listview/clv_control_wrap.o \
-	$(BUILD_DIR)/rich_listview/clv_control_render.o \
-	$(BUILD_DIR)/rich_listview/clv_control_checkbox.o \
-	$(BUILD_DIR)/rich_listview/clv_control_input.o \
-	$(BUILD_DIR)/rich_listview/clv_control_scroll.o \
-	$(BUILD_DIR)/rich_listview/backends/clv_backend_amiga_v36.o
+RLV_OBJS = \
+	$(BUILD_DIR)/rich_listview/rlv.o \
+	$(BUILD_DIR)/rich_listview/rlv_layout.o \
+	$(BUILD_DIR)/rich_listview/rlv_wrap.o \
+	$(BUILD_DIR)/rich_listview/rlv_render.o \
+	$(BUILD_DIR)/rich_listview/rlv_checkbox.o \
+	$(BUILD_DIR)/rich_listview/rlv_input.o \
+	$(BUILD_DIR)/rich_listview/rlv_scroll.o \
+	$(BUILD_DIR)/rich_listview/backends/rlv_backend_amiga_v36.o
 
-CLV_CUSTOM_CONTROL_LIBS = \
-	$(CLV_PLATFORM_OBJS) \
-	$(CLV_CUSTOM_CONTROL_OBJS)
+RLV_LIBS = \
+	$(RLV_PLATFORM_OBJS) \
+	$(RLV_OBJS)
 
-CLV_CUSTOM_CONTROL_LOG_OBJS = \
-	$(CLV_CTRL_LOG_DIR)/clv_control.o \
-	$(CLV_CTRL_LOG_DIR)/clv_control_layout.o \
-	$(CLV_CTRL_LOG_DIR)/clv_control_wrap.o \
-	$(CLV_CTRL_LOG_DIR)/clv_control_render.o \
-	$(CLV_CTRL_LOG_DIR)/clv_control_checkbox.o \
-	$(CLV_CTRL_LOG_DIR)/clv_control_input.o \
-	$(CLV_CTRL_LOG_DIR)/clv_control_scroll.o \
-	$(CLV_CTRL_LOG_DIR)/backends/clv_backend_amiga_v36.o \
-	$(CLV_CTRL_LOG_DIR)/clv_control_log.o
+RLV_LOG_OBJS = \
+	$(RLV_LOG_DIR)/rlv.o \
+	$(RLV_LOG_DIR)/rlv_layout.o \
+	$(RLV_LOG_DIR)/rlv_wrap.o \
+	$(RLV_LOG_DIR)/rlv_render.o \
+	$(RLV_LOG_DIR)/rlv_checkbox.o \
+	$(RLV_LOG_DIR)/rlv_input.o \
+	$(RLV_LOG_DIR)/rlv_scroll.o \
+	$(RLV_LOG_DIR)/backends/rlv_backend_amiga_v36.o \
+	$(RLV_LOG_DIR)/rlv_log.o
 
-CLV_CUSTOM_CONTROL_LOG_LIBS = \
-	$(CLV_PLATFORM_OBJS) \
-	$(CLV_CUSTOM_CONTROL_LOG_OBJS)
+RLV_LOG_LIBS = \
+	$(RLV_PLATFORM_OBJS) \
+	$(RLV_LOG_OBJS)
 
-CLV_CUSTOM_CONTROL_BENCH_OBJS = \
-	$(CLV_CTRL_BENCH_DIR)/clv_control.o \
-	$(CLV_CTRL_BENCH_DIR)/clv_control_layout.o \
-	$(CLV_CTRL_BENCH_DIR)/clv_control_wrap.o \
-	$(CLV_CTRL_BENCH_DIR)/clv_control_render.o \
-	$(CLV_CTRL_BENCH_DIR)/clv_control_checkbox.o \
-	$(CLV_CTRL_BENCH_DIR)/clv_control_input.o \
-	$(CLV_CTRL_BENCH_DIR)/clv_control_scroll.o \
-	$(CLV_CTRL_BENCH_DIR)/backends/clv_backend_amiga_v36.o \
-	$(CLV_CTRL_BENCH_DIR)/clv_platform.o \
-	$(CLV_CTRL_BENCH_DIR)/clv_bench.o
+RLV_BENCH_OBJS = \
+	$(RLV_BENCH_DIR)/rlv.o \
+	$(RLV_BENCH_DIR)/rlv_layout.o \
+	$(RLV_BENCH_DIR)/rlv_wrap.o \
+	$(RLV_BENCH_DIR)/rlv_render.o \
+	$(RLV_BENCH_DIR)/rlv_checkbox.o \
+	$(RLV_BENCH_DIR)/rlv_input.o \
+	$(RLV_BENCH_DIR)/rlv_scroll.o \
+	$(RLV_BENCH_DIR)/backends/rlv_backend_amiga_v36.o \
+	$(RLV_BENCH_DIR)/rlv_platform.o \
+	$(RLV_BENCH_DIR)/rlv_bench.o
 
-CLV_CUSTOM_CONTROL_BENCH_LIBS = \
-	$(CLV_CUSTOM_CONTROL_BENCH_OBJS)
+RLV_BENCH_LIBS = \
+	$(RLV_BENCH_OBJS)
 
-EXAMPLE_CUSTOM_CONTROL_OBJ = $(BUILD_DIR)/examples/custom_control_demo.o
-EXAMPLE_CUSTOM_CONTROL_LOG_OBJ = $(BUILD_DIR)/examples/custom_control_demo_log.o
-EXAMPLE_CUSTOM_CONTROL_BENCH_OBJ = $(BUILD_DIR)/examples/custom_control_demo_bench.o
+RLV_NOSMART_PLATFORM_OBJS = $(RLV_NOSMART_DIR)/rlv_platform.o
+
+RLV_NOSMART_OBJS = \
+	$(RLV_NOSMART_DIR)/rlv.o \
+	$(RLV_NOSMART_DIR)/rlv_layout.o \
+	$(RLV_NOSMART_DIR)/rlv_wrap.o \
+	$(RLV_NOSMART_DIR)/rlv_render.o \
+	$(RLV_NOSMART_DIR)/rlv_checkbox.o \
+	$(RLV_NOSMART_DIR)/rlv_input.o \
+	$(RLV_NOSMART_DIR)/rlv_scroll.o \
+	$(RLV_NOSMART_DIR)/backends/rlv_backend_amiga_v36.o
+
+RLV_NOSMART_LIBS = \
+	$(RLV_NOSMART_PLATFORM_OBJS) \
+	$(RLV_NOSMART_OBJS)
+
+EXAMPLE_OBJ = $(BUILD_DIR)/examples/rich_listview_demo.o
+EXAMPLE_LOG_OBJ = $(BUILD_DIR)/examples/rich_listview_demo_log.o
+EXAMPLE_BENCH_OBJ = $(BUILD_DIR)/examples/rich_listview_demo_bench.o
+EXAMPLE_NOSMART_OBJ = $(RLV_NOSMART_DIR)/examples/rich_listview_demo.o
 
 # ---------------------------------------------------------------------------
 # Targets
 # ---------------------------------------------------------------------------
 
 .PHONY: all dirs clean \
-	custom-control-demo custom-control-demo-log \
-	custom-control-demo-bench custom-control-demo-nosmart
+	rich-listview-demo rich-listview-demo-log \
+	rich-listview-demo-bench rich-listview-demo-nosmart \
+	public-header-audit
 
-all: custom-control-demo
+all: rich-listview-demo
 
 dirs:
-	@powershell -Command "New-Item -ItemType Directory -Force -Path '$(BUILD_DIR)/examples','$(BUILD_DIR)/rich_listview/backends','$(CLV_CTRL_LOG_DIR)/backends','$(CLV_CTRL_BENCH_DIR)/backends','$(BIN_DIR)' | Out-Null"
+	@powershell -Command "New-Item -ItemType Directory -Force -Path '$(BUILD_DIR)/examples','$(BUILD_DIR)/rich_listview/backends','$(RLV_LOG_DIR)/backends','$(RLV_BENCH_DIR)/backends','$(RLV_NOSMART_DIR)/backends','$(RLV_NOSMART_DIR)/examples','$(BUILD_DIR)/tests/public_headers','$(BIN_DIR)' | Out-Null"
 
-custom-control-demo: dirs $(BIN_DIR)/custom-control-demo
-custom-control-demo-log: dirs $(BIN_DIR)/custom-control-demo-log
-custom-control-demo-bench: dirs $(BIN_DIR)/custom-control-demo-bench
+# Compile-only: public headers must not need private includes.
+public-header-audit: dirs \
+	$(BUILD_DIR)/tests/public_headers/rlv_public_core.o \
+	$(BUILD_DIR)/tests/public_headers/rlv_public_backend.o
 
-$(BIN_DIR)/custom-control-demo: $(CLV_CUSTOM_CONTROL_LIBS) $(EXAMPLE_CUSTOM_CONTROL_OBJ)
-	$(CC) $(LDFLAGS) -o $@ $(CLV_CUSTOM_CONTROL_LIBS) $(EXAMPLE_CUSTOM_CONTROL_OBJ)
+$(BUILD_DIR)/tests/public_headers/%.o: tests/public_headers/%.c
+	$(CC) $(RLV_CFLAGS) -c -o $@ $<
 
-$(BIN_DIR)/custom-control-demo-log: $(CLV_CUSTOM_CONTROL_LOG_LIBS) $(EXAMPLE_CUSTOM_CONTROL_LOG_OBJ)
-	$(CC) $(LDFLAGS) -o $@ $(CLV_CUSTOM_CONTROL_LOG_LIBS) $(EXAMPLE_CUSTOM_CONTROL_LOG_OBJ)
 
-$(BIN_DIR)/custom-control-demo-bench: $(CLV_CUSTOM_CONTROL_BENCH_LIBS) $(EXAMPLE_CUSTOM_CONTROL_BENCH_OBJ)
-	$(CC) $(LDFLAGS) -o $@ $(CLV_CUSTOM_CONTROL_BENCH_LIBS) $(EXAMPLE_CUSTOM_CONTROL_BENCH_OBJ)
+rich-listview-demo: dirs $(BIN_DIR)/rich-listview-demo
+rich-listview-demo-log: dirs $(BIN_DIR)/rich-listview-demo-log
+rich-listview-demo-bench: dirs $(BIN_DIR)/rich-listview-demo-bench
+rich-listview-demo-nosmart: dirs $(BIN_DIR)/rich-listview-demo-nosmart
 
-# Rebuild baseline with smart scroll disabled (reuses same output name).
-custom-control-demo-nosmart:
-	$(MAKE) custom-control-demo CLV_ENABLE_SMART_SCROLL=0
+$(BIN_DIR)/rich-listview-demo: $(RLV_LIBS) $(EXAMPLE_OBJ)
+	$(CC) $(LDFLAGS) -o $@ $(RLV_LIBS) $(EXAMPLE_OBJ)
+
+$(BIN_DIR)/rich-listview-demo-log: $(RLV_LOG_LIBS) $(EXAMPLE_LOG_OBJ)
+	$(CC) $(LDFLAGS) -o $@ $(RLV_LOG_LIBS) $(EXAMPLE_LOG_OBJ)
+
+$(BIN_DIR)/rich-listview-demo-bench: $(RLV_BENCH_LIBS) $(EXAMPLE_BENCH_OBJ)
+	$(CC) $(LDFLAGS) -o $@ $(RLV_BENCH_LIBS) $(EXAMPLE_BENCH_OBJ)
+
+$(BIN_DIR)/rich-listview-demo-nosmart: $(RLV_NOSMART_LIBS) $(EXAMPLE_NOSMART_OBJ)
+	$(CC) $(LDFLAGS) -o $@ $(RLV_NOSMART_LIBS) $(EXAMPLE_NOSMART_OBJ)
 
 # ---------------------------------------------------------------------------
 # Compile rules
 # ---------------------------------------------------------------------------
 
 $(BUILD_DIR)/rich_listview/%.o: src/rich_listview/%.c
-	$(CC) $(CLV_CTRL_CFLAGS) -c -o $@ $<
+	$(CC) $(RLV_CFLAGS) -c -o $@ $<
 
 $(BUILD_DIR)/rich_listview/backends/%.o: src/rich_listview/backends/%.c
-	$(CC) $(CLV_CTRL_CFLAGS) -c -o $@ $<
+	$(CC) $(RLV_CFLAGS) -c -o $@ $<
 
-$(CLV_CTRL_LOG_DIR)/%.o: src/rich_listview/%.c
-	$(CC) $(CLV_CTRL_LOG_CFLAGS) -c -o $@ $<
+$(RLV_LOG_DIR)/%.o: src/rich_listview/%.c
+	$(CC) $(RLV_LOG_CFLAGS) -c -o $@ $<
 
-$(CLV_CTRL_LOG_DIR)/backends/%.o: src/rich_listview/backends/%.c
-	$(CC) $(CLV_CTRL_LOG_CFLAGS) -c -o $@ $<
+$(RLV_LOG_DIR)/backends/%.o: src/rich_listview/backends/%.c
+	$(CC) $(RLV_LOG_CFLAGS) -c -o $@ $<
 
-$(CLV_CTRL_BENCH_DIR)/%.o: src/rich_listview/%.c
-	$(CC) $(CLV_CTRL_BENCH_CFLAGS) -c -o $@ $<
+$(RLV_BENCH_DIR)/%.o: src/rich_listview/%.c
+	$(CC) $(RLV_BENCH_CFLAGS) -c -o $@ $<
 
-$(CLV_CTRL_BENCH_DIR)/backends/%.o: src/rich_listview/backends/%.c
-	$(CC) $(CLV_CTRL_BENCH_CFLAGS) -c -o $@ $<
+$(RLV_BENCH_DIR)/backends/%.o: src/rich_listview/backends/%.c
+	$(CC) $(RLV_BENCH_CFLAGS) -c -o $@ $<
 
-$(BUILD_DIR)/examples/custom_control_demo.o: examples/custom_control_demo/main.c
-	$(CC) $(CLV_CTRL_CFLAGS) -c -o $@ $<
+$(RLV_NOSMART_DIR)/%.o: src/rich_listview/%.c
+	$(CC) $(RLV_NOSMART_CFLAGS) -c -o $@ $<
 
-$(BUILD_DIR)/examples/custom_control_demo_log.o: examples/custom_control_demo/main.c
-	$(CC) $(CLV_CTRL_LOG_CFLAGS) -c -o $@ $<
+$(RLV_NOSMART_DIR)/backends/%.o: src/rich_listview/backends/%.c
+	$(CC) $(RLV_NOSMART_CFLAGS) -c -o $@ $<
 
-$(BUILD_DIR)/examples/custom_control_demo_bench.o: examples/custom_control_demo/main.c
-	$(CC) $(CLV_CTRL_BENCH_CFLAGS) -c -o $@ $<
+$(BUILD_DIR)/examples/rich_listview_demo.o: examples/rich_listview_demo/main.c
+	$(CC) $(RLV_CFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/examples/rich_listview_demo_log.o: examples/rich_listview_demo/main.c
+	$(CC) $(RLV_LOG_CFLAGS) -c -o $@ $<
+
+$(BUILD_DIR)/examples/rich_listview_demo_bench.o: examples/rich_listview_demo/main.c
+	$(CC) $(RLV_BENCH_CFLAGS) -c -o $@ $<
+
+$(RLV_NOSMART_DIR)/examples/rich_listview_demo.o: examples/rich_listview_demo/main.c
+	$(CC) $(RLV_NOSMART_CFLAGS) -c -o $@ $<
 
 clean:
 	@powershell -Command "if (Test-Path '$(BUILD_DIR)') { Remove-Item -Recurse -Force '$(BUILD_DIR)' }; if (Test-Path '$(BIN_DIR)') { Remove-Item -Recurse -Force '$(BIN_DIR)' }"

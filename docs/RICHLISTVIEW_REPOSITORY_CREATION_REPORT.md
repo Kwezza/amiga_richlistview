@@ -4,6 +4,12 @@
 **Principle followed:** Copy first → Build unchanged → Clean later  
 **Status:** Baseline extraction succeeded (compile/link verified)
 
+> **Namespace note (post-extraction):** After this report was written, the
+> active API was mechanically renamed from inherited `CLV_*` /
+> `clv_control_*` names to `RLV_*` / `rlv_*`. See
+> `docs/RICHLISTVIEW_NAMESPACE_MIGRATION_REPORT.md`. Filenames and
+> symbols listed below are the **extraction-time** names.
+
 ---
 
 ## New repository path
@@ -308,13 +314,13 @@ See **Deferred Cleanup** below.
 
 ## Deferred Cleanup
 
-- Rename `CLV_*` / `clv_control_*` to `RLV_*` / `rlv_*`
-- Trim `clv_types.h` (remove GadTools-oriented `CLV_LISTVIEW_SCROLLBAR_BORDER` narrative / unused constants if Rich does not need them)
-- Separate or rename logging APIs (`clv_log_*` in `clv_control_log.h` vs legacy no-op logger naming)
+- ~~Rename `CLV_*` / `clv_control_*` to `RLV_*` / `rlv_*`~~ — done; see `docs/RICHLISTVIEW_NAMESPACE_MIGRATION_REPORT.md`
+- Trim `rlv_types.h` (remove GadTools-oriented `RLV_LISTVIEW_SCROLLBAR_BORDER` narrative / unused constants if Rich does not need them)
+- Review logging APIs vs any remaining legacy no-op logger naming in docs
 - Add RichListview-specific tests (do not import the legacy host suite as-is)
 - Review public vs private headers
-- Create a final RichListview integration guide (demo README still references old source paths in places)
+- Create a final RichListview integration guide
 - Decide whether optional sort/path helpers are needed
-- Consider isolated object trees for `custom-control-demo-nosmart` (parity with log/bench) to avoid stale-flag no-ops
-- Optionally vendor `clv_compiler.h` / SDK compat headers if a future feature needs them
-- Update demo README module path list to `src/rich_listview/`
+- ~~Consider isolated object trees for nosmart~~ — done as `rich-listview-demo-nosmart` with `build/rich_listview_nosmart/`
+- Optionally vendor compiler / SDK compat headers if a future feature needs them
+- Update demo README module path list to `src/rich_listview/` (partially done in namespace migration)

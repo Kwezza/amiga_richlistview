@@ -15,7 +15,7 @@ It owns:
 It does **not** use GadTools `LISTVIEW_KIND` as its row renderer.
 
 A normal GadTools `SCROLLER_KIND` may be used as a companion scrollbar
-(see `examples/custom_control_demo/`).
+(see `examples/rich_listview_demo/`).
 
 ## Origin
 
@@ -27,35 +27,44 @@ The legacy GadTools draw-hook enhancer and ASCII label formatter are
 
 Audit evidence for the split lives under [`docs/audit/`](docs/audit/).
 
-## API naming (temporary)
+## Public API
 
-The current public API still uses `CLV_*` and `clv_control_*` names
-carried over from the source tree.
+Preferred include:
 
-Renaming to `RLV_*` / `rlv_*` is deferred until after extraction
-stability is proven. Do not rename during early cleanup without a
-dedicated migration plan.
+```c
+#include "rich_listview/rich_listview.h"
+```
 
+Optional Amiga V36 backend setup:
+
+```c
+#include "rich_listview/backends/rlv_backend_amiga_v36.h"
+```
+
+Public types and macros use the `RLV_*` prefix. Functions use `rlv_*`.
+`RLV_Control` and `RLV_BackendV36` are opaque. Application code must not
+include private headers (`rlv_internal.h`, `rlv_platform_internal.h`,
+`rlv_bench_internal.h`, `rlv_log.h`).
 ## Build (VBCC / AmigaOS 68k)
 
 Requires VBCC with the `+aos68k` target and Amiga SDK libraries.
 
 ```text
-make custom-control-demo
+make rich-listview-demo
 ```
 
-Output: `bin/custom-control-demo`
+Output: `bin/rich-listview-demo`
 
-Optional parity targets (same as the source repository):
+Optional variants:
 
 ```text
-make custom-control-demo-log
-make custom-control-demo-bench
-make custom-control-demo-nosmart
+make rich-listview-demo-log
+make rich-listview-demo-bench
+make rich-listview-demo-nosmart
 ```
 
-CPU target is 68000. Flags match the extracted custom-control build
-(`-c99 -cpu=68000 -O2 -size`, link `-lamiga -lauto`).
+CPU target is 68000. Flags: `-c99 -cpu=68000 -O2 -size`, link
+`-lamiga -lauto`. Smart-scroll on/off builds use isolated object trees.
 
 ## Agent warning
 
@@ -70,10 +79,12 @@ owns paint, selection, wrap, and checkbox cells via `src/rich_listview/`.
 
 ```text
 src/rich_listview/     control + Amiga V36 backend + platform/types
-examples/custom_control_demo/
+examples/rich_listview_demo/
 docs/audit/            extraction audit reports
 docs/historical/       mixed-era planning notes
 ```
 
 See [`docs/RICHLISTVIEW_REPOSITORY_CREATION_REPORT.md`](docs/RICHLISTVIEW_REPOSITORY_CREATION_REPORT.md)
-for the extraction record.
+for the extraction record, and
+[`docs/RICHLISTVIEW_NAMESPACE_MIGRATION_REPORT.md`](docs/RICHLISTVIEW_NAMESPACE_MIGRATION_REPORT.md)
+for the `CLV_*` → `RLV_*` rename.
