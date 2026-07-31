@@ -1,0 +1,9 @@
+build/
+bin/
+*.o
+*.exe
+*.map
+*.log
+*.info
+.DS_Store
+Thumbs.db
