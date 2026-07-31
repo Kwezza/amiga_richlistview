@@ -64,12 +64,40 @@ headers required).
    - `RLV_EVENT_SELECTION_CHANGED` — regional or full paint as before
    - `RLV_EVENT_CELL_CONTROL` — checkbox: `control_type` CHECKBOX,
      `control_action` VALUE_CHANGED; sync store from `ev.cell_value` via
-     `ev.row_user_data`, then `rlv_render_logical_rows(c, row, -1)`;
-     this demo also formats the event into a persistent buffer and updates
-     a bordered `TEXT_KIND` status gadget with `GT_SetGadgetAttrs(GTTX_Text)`
+     `ev.row_user_data`, then prefer
+     `rlv_render_cell_control(c, row, column)` (escalates to row/viewport
+     when local restore is unsafe); this demo also formats the event into
+     a persistent buffer and updates a bordered `TEXT_KIND` status gadget
+     with `GT_SetGadgetAttrs(GTTX_Text)`
    - `RLV_EVENT_ACTIVATED` — Return only; never a toggle
-7. Reject-restore / async: `rlv_set_checkbox_value` then repaint
-   (does not write the app store).
+7. Reject-restore / async: `rlv_set_checkbox_value` then the same narrow
+   or regional repaint (does not write the app store).
+
+## Control activation and current-row visuals
+
+Defaults preserve historical behaviour (`SELECT_ROW` + `FULL` highlight).
+
+| Key / CLI | Effect |
+|-----------|--------|
+| `A` | Toggle `SELECT_ROW` ↔ `KEEP_CURRENT` |
+| `V` | Cycle `FULL` → `MARKER` → `NONE` |
+| `KEEPCURRENT` | Start in independent checkbox mode |
+| `MARKER` | Start with left-edge current-row marker |
+| `NOVISUAL` | Start with no current-row decoration |
+
+In `KEEP_CURRENT` mode:
+
+1. Select a row with the mouse or keyboard (current row stays put).
+2. Click a checkbox on a **different** row.
+3. The checkbox toggles and the status line reports that row/column.
+4. The current/selected row does **not** move; scroll does not jump.
+
+`MARKER` draws a narrow left-edge bar with the selected-background pen
+across the logical row height (including wraps). Prefer `X Pad: 2` or
+higher so the marker sits in the text inset.
+
+Changing either policy does **not** rebuild wrapping; `V` triggers a
+viewport repaint only.
 
 ## Cell-control event notification (integrator contract)
 
@@ -121,6 +149,8 @@ Row kinds in this demo:
 | Ctrl + Cursor Up / Down | `NAV_FIRST` / `NAV_LAST` (Ctrl wins over Shift) |
 | Return (`0x44`) | `NAV_ACTIVATE` when a selectable row is selected |
 | Space (`0x40`) | `RLV_INPUT_TOGGLE` — sole eligible checkbox on selected row |
+| A (`0x20`) | Toggle activation policy (`SELECT_ROW` / `KEEP_CURRENT`) |
+| V (`0x34`) | Cycle current-row visual (`FULL` / `MARKER` / `NONE`) |
 | Home / End / PgUp / PgDn | Not mapped (not on classic Amiga keyboards) |
 
 Key repeat uses OS/Intuition repeated `IDCMP_RAWKEY` messages (no INTUITICKS

@@ -78,7 +78,7 @@ struct RLV_Control
     RLV_RowLayout *layout_rows; /* owned */
     LONG content_height;
     LONG scroll_y;
-    LONG selected_row; /* -1 = none; logical index when selected */
+    LONG selected_row; /* -1 = none; logical navigation/current index */
     BOOL keyboard_enabled; /* NAV_* / TOGGLE via handle_input; default TRUE */
 
     /*
@@ -121,6 +121,10 @@ struct RLV_Control
     ULONG cell_wrap_count;
 
     BOOL layout_valid;
+
+    /* Appended policies (keep at end — safer for incremental rebuilds). */
+    UWORD control_activation_policy; /* RLV_ControlActivationPolicy */
+    UWORD current_row_visual;        /* RLV_CurrentRowVisual */
 };
 
 /* layout — TRUE when layout_valid caches are ready for paint/hit-test. */
@@ -172,6 +176,9 @@ VOID rlv_checkbox_paint(RLV_Control *c,
                              LONG logical_row,
                              UWORD column,
                              BOOL selected);
+
+/* TRUE when the logical row should use full selected fill/text pens. */
+BOOL rlv_row_uses_selected_fill(const RLV_Control *c, LONG logical_row);
 
 #ifdef __cplusplus
 }

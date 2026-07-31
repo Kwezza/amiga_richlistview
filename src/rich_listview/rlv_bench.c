@@ -256,7 +256,9 @@ static const char *g_rlv_bench_counter_names[RLV_BENCH_COUNTER_COUNT] =
     "nonselectable_skips",
     "boundary_hits",
     "repeated_key_events",
-    "prepare_rebuilds_during_nav"
+    "prepare_rebuilds_during_nav",
+    "control_only_redraws",
+    "control_repaint_fallbacks"
 };
 
 static VOID rlv_bench_copy_text(char *dst, CONST_STRPTR src, UWORD size)

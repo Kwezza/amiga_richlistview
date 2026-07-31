@@ -145,40 +145,62 @@ $(BIN_DIR)/rich-listview-demo-nosmart: $(RLV_NOSMART_LIBS) $(EXAMPLE_NOSMART_OBJ
 # Compile rules
 # ---------------------------------------------------------------------------
 
-$(BUILD_DIR)/rich_listview/%.o: src/rich_listview/%.c
+# Private control layout lives in rlv_internal.h. Without these deps, a
+# mid/end-struct field addition can leave stale .o files with wrong offsets
+# (pointer corruption / Software Failure during layout or paint).
+RLV_CORE_HDRS = \
+	src/rich_listview/rich_listview.h \
+	src/rich_listview/rlv_internal.h \
+	src/rich_listview/rlv_draw.h \
+	src/rich_listview/rlv_platform.h \
+	src/rich_listview/rlv_bench_internal.h
+
+$(BUILD_DIR)/rich_listview/%.o: src/rich_listview/%.c $(RLV_CORE_HDRS)
 	$(CC) $(RLV_CFLAGS) -c -o $@ $<
 
-$(BUILD_DIR)/rich_listview/backends/%.o: src/rich_listview/backends/%.c
+$(BUILD_DIR)/rich_listview/backends/%.o: src/rich_listview/backends/%.c $(RLV_CORE_HDRS) \
+	src/rich_listview/backends/rlv_backend_amiga_v36.h
 	$(CC) $(RLV_CFLAGS) -c -o $@ $<
 
-$(RLV_LOG_DIR)/%.o: src/rich_listview/%.c
+$(RLV_LOG_DIR)/%.o: src/rich_listview/%.c $(RLV_CORE_HDRS)
 	$(CC) $(RLV_LOG_CFLAGS) -c -o $@ $<
 
-$(RLV_LOG_DIR)/backends/%.o: src/rich_listview/backends/%.c
+$(RLV_LOG_DIR)/backends/%.o: src/rich_listview/backends/%.c $(RLV_CORE_HDRS) \
+	src/rich_listview/backends/rlv_backend_amiga_v36.h
 	$(CC) $(RLV_LOG_CFLAGS) -c -o $@ $<
 
-$(RLV_BENCH_DIR)/%.o: src/rich_listview/%.c
+$(RLV_BENCH_DIR)/%.o: src/rich_listview/%.c $(RLV_CORE_HDRS)
 	$(CC) $(RLV_BENCH_CFLAGS) -c -o $@ $<
 
-$(RLV_BENCH_DIR)/backends/%.o: src/rich_listview/backends/%.c
+$(RLV_BENCH_DIR)/backends/%.o: src/rich_listview/backends/%.c $(RLV_CORE_HDRS) \
+	src/rich_listview/backends/rlv_backend_amiga_v36.h
 	$(CC) $(RLV_BENCH_CFLAGS) -c -o $@ $<
 
-$(RLV_NOSMART_DIR)/%.o: src/rich_listview/%.c
+$(RLV_NOSMART_DIR)/%.o: src/rich_listview/%.c $(RLV_CORE_HDRS)
 	$(CC) $(RLV_NOSMART_CFLAGS) -c -o $@ $<
 
-$(RLV_NOSMART_DIR)/backends/%.o: src/rich_listview/backends/%.c
+$(RLV_NOSMART_DIR)/backends/%.o: src/rich_listview/backends/%.c $(RLV_CORE_HDRS) \
+	src/rich_listview/backends/rlv_backend_amiga_v36.h
 	$(CC) $(RLV_NOSMART_CFLAGS) -c -o $@ $<
 
-$(BUILD_DIR)/examples/rich_listview_demo.o: examples/rich_listview_demo/main.c
+$(BUILD_DIR)/examples/rich_listview_demo.o: examples/rich_listview_demo/main.c \
+	src/rich_listview/rich_listview.h \
+	src/rich_listview/backends/rlv_backend_amiga_v36.h
 	$(CC) $(RLV_CFLAGS) -c -o $@ $<
 
-$(BUILD_DIR)/examples/rich_listview_demo_log.o: examples/rich_listview_demo/main.c
+$(BUILD_DIR)/examples/rich_listview_demo_log.o: examples/rich_listview_demo/main.c \
+	src/rich_listview/rich_listview.h \
+	src/rich_listview/backends/rlv_backend_amiga_v36.h
 	$(CC) $(RLV_LOG_CFLAGS) -c -o $@ $<
 
-$(BUILD_DIR)/examples/rich_listview_demo_bench.o: examples/rich_listview_demo/main.c
+$(BUILD_DIR)/examples/rich_listview_demo_bench.o: examples/rich_listview_demo/main.c \
+	src/rich_listview/rich_listview.h \
+	src/rich_listview/backends/rlv_backend_amiga_v36.h
 	$(CC) $(RLV_BENCH_CFLAGS) -c -o $@ $<
 
-$(RLV_NOSMART_DIR)/examples/rich_listview_demo.o: examples/rich_listview_demo/main.c
+$(RLV_NOSMART_DIR)/examples/rich_listview_demo.o: examples/rich_listview_demo/main.c \
+	src/rich_listview/rich_listview.h \
+	src/rich_listview/backends/rlv_backend_amiga_v36.h
 	$(CC) $(RLV_NOSMART_CFLAGS) -c -o $@ $<
 
 clean:

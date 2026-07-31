@@ -35,6 +35,29 @@ int main(void)
     event_type = (UWORD)RLV_EVENT_NONE;
     input_type = (UWORD)RLV_INPUT_SELECT_DOWN;
 
+    /* Touch new policy / repaint enums so the public header remains usable. */
+    {
+        UWORD policy;
+        UWORD visual;
+        UWORD repaint;
+
+        policy = (UWORD)RLV_CONTROL_ACTIVATE_SELECT_ROW;
+        visual = (UWORD)RLV_CURRENT_ROW_VISUAL_FULL;
+        repaint = (UWORD)RLV_CELL_REPAINT_OK;
+        if (policy != 0 || visual != 0 || repaint != 0) {
+            return 1;
+        }
+        policy = (UWORD)RLV_CONTROL_ACTIVATE_KEEP_CURRENT;
+        visual = (UWORD)RLV_CURRENT_ROW_VISUAL_MARKER;
+        if (policy == 0 || visual == 0) {
+            return 1;
+        }
+        visual = (UWORD)RLV_CURRENT_ROW_VISUAL_NONE;
+        if (visual == 0) {
+            return 1;
+        }
+    }
+
     if (control != 0 || cfg.flags != 0 || col.width_pixels != 0 ||
         row.flags != 0 || cell.flags != 0 || in.type != 0 ||
         ev.type != 0 || pens.text != 0 ||

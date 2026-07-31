@@ -471,8 +471,10 @@ static VOID rlv_draw_frag(RLV_Control *c,
 }
 
 /*
- * Paint one logical row's content (selection fill + fragments) when its
- * content rectangle intersects paint_area. Baseline rejection preserved.
+ * Paint one logical row's content (current-row presentation + fragments)
+ * when its content rectangle intersects paint_area. Baseline rejection
+ * preserved. Full fill uses selected pens only when visual is FULL;
+ * MARKER draws a left-edge bar after content; NONE uses normal pens.
  */
 static VOID rlv_paint_row_content(RLV_Control *c,
                                        ULONG layout_index,
@@ -495,7 +497,11 @@ static VOID rlv_paint_row_content(RLV_Control *c,
     UWORD fill_pen;
     UWORD text_pen;
     UWORD text_back;
-    BOOL selected;
+    BOOL is_current;
+    BOOL use_selected_fill;
+    WORD marker_w;
+    WORD marker_right;
+    struct Rectangle marker;
 
     if (c == 0 || paint_area == 0 || c->draw_ops == 0) {
         return;
@@ -515,9 +521,10 @@ static VOID rlv_paint_row_content(RLV_Control *c,
         line_h = 1;
     }
 
-    selected = (c->selected_row >= 0
-                && (LONG)layout_index == c->selected_row) ? TRUE : FALSE;
-    if (selected) {
+    is_current = (c->selected_row >= 0
+                  && (LONG)layout_index == c->selected_row) ? TRUE : FALSE;
+    use_selected_fill = rlv_row_uses_selected_fill(c, (LONG)layout_index);
+    if (use_selected_fill) {
         fill_pen = c->pens.selected_background;
         text_pen = c->pens.selected_text;
         text_back = c->pens.selected_background;
@@ -545,7 +552,7 @@ static VOID rlv_paint_row_content(RLV_Control *c,
         if (c->columns != 0
             && ((c->columns[col].flags & RLV_COL_TYPE_MASK)
                 == (UWORD)RLV_COL_TYPE_CHECKBOX)) {
-            rlv_checkbox_paint(c, (LONG)layout_index, col, selected);
+            rlv_checkbox_paint(c, (LONG)layout_index, col, use_selected_fill);
             continue;
         }
 
@@ -563,6 +570,39 @@ static VOID rlv_paint_row_content(RLV_Control *c,
             /* Viewport baseline rejection lives in rlv_draw_frag;
              * soft/hardware clip handles glyphs that only partly meet paint. */
             rlv_draw_frag(c, frag, baseline, text_pen, text_back);
+        }
+    }
+
+    /*
+     * Lightweight current-row marker: narrow left-edge fill using the
+     * selected-background pen. Prefer fitting inside cell_padding_x so
+     * text/controls are not obscured; fall back to 1 px when padding is 0.
+     * Drawn after content so it remains visible; clipped to paint_area.
+     */
+    if (is_current
+        && c->current_row_visual == (UWORD)RLV_CURRENT_ROW_VISUAL_MARKER) {
+        marker_w = 2;
+        if (c->cell_padding_x > 0 && (WORD)c->cell_padding_x < marker_w) {
+            marker_w = (WORD)c->cell_padding_x;
+        }
+        if (marker_w < 1) {
+            marker_w = 1;
+        }
+        marker.MinX = content.MinX;
+        marker.MaxX = (WORD)(content.MinX + marker_w - 1);
+        marker.MinY = content.MinY;
+        marker.MaxY = content.MaxY;
+        if (rlv_intersect_rects(&marker, paint_area, &marker)) {
+            marker_right = marker.MaxX;
+            if (marker_right >= marker.MinX) {
+                ops->set_pens(ctx,
+                              c->pens.selected_background,
+                              c->pens.selected_background);
+                ops->fill_rect(ctx,
+                               marker.MinX, marker.MinY,
+                               marker_right, marker.MaxY);
+                RLV_BENCH_COUNT(RLV_BENCH_COUNTER_HIGHLIGHT_FILLS);
+            }
         }
     }
 
@@ -787,6 +827,107 @@ VOID rlv_render_logical_rows(RLV_Control *c,
         }
     }
     RLV_LOG("control render_logical_rows end");
+}
+
+UWORD rlv_render_cell_control(RLV_Control *c,
+                                      LONG row,
+                                      UWORD column)
+{
+    const RLV_DrawOps *ops;
+    APTR ctx;
+    struct Rectangle box;
+    struct Rectangle visible;
+    UWORD col_type;
+    BOOL use_selected_fill;
+    BOOL clip_ok;
+    BOOL clip_pushed;
+    UWORD back_pen;
+
+    RLV_LOGF("render_cell_control begin row=%ld col=%u",
+             (long)row, (unsigned)column);
+
+    if (c == 0 || c->draw_ops == 0 || c->columns == 0) {
+        RLV_LOG("render_cell_control error (null)");
+        return (UWORD)RLV_CELL_REPAINT_ERROR;
+    }
+    if (row < 0 || (ULONG)row >= c->row_count) {
+        RLV_LOG("render_cell_control error (row)");
+        return (UWORD)RLV_CELL_REPAINT_ERROR;
+    }
+    if (column >= c->column_count) {
+        RLV_LOG("render_cell_control error (column)");
+        return (UWORD)RLV_CELL_REPAINT_ERROR;
+    }
+
+    col_type = (UWORD)(c->columns[column].flags & RLV_COL_TYPE_MASK);
+    if (col_type != (UWORD)RLV_COL_TYPE_CHECKBOX) {
+        RLV_LOG("render_cell_control error (not checkbox)");
+        return (UWORD)RLV_CELL_REPAINT_ERROR;
+    }
+
+    if (!c->layout_valid) {
+        RLV_LOG("render_cell_control fallback viewport (layout invalid)");
+        RLV_BENCH_COUNT(RLV_BENCH_COUNTER_CONTROL_REPAINT_FALLBACKS);
+        RLV_BENCH_COUNT(RLV_BENCH_COUNTER_FULL_REDRAWS);
+        rlv_render_viewport(c);
+        return (UWORD)RLV_CELL_REPAINT_VIEWPORT;
+    }
+
+    if (!rlv_checkbox_resolve_rect(c, row, column, &box)) {
+        RLV_LOG("render_cell_control error (resolve)");
+        return (UWORD)RLV_CELL_REPAINT_ERROR;
+    }
+
+    if (!rlv_intersect_rects(&box, &c->viewport_bounds, &visible)) {
+        RLV_LOG("render_cell_control not_visible");
+        return (UWORD)RLV_CELL_REPAINT_NOT_VISIBLE;
+    }
+
+    /*
+     * Require the full control rectangle inside the viewport so local
+     * background restore cannot leave stale pixels on a clipped edge.
+     */
+    if (visible.MinX != box.MinX || visible.MinY != box.MinY
+        || visible.MaxX != box.MaxX || visible.MaxY != box.MaxY) {
+        RLV_LOG("render_cell_control fallback row (partially visible)");
+        RLV_BENCH_COUNT(RLV_BENCH_COUNTER_CONTROL_REPAINT_FALLBACKS);
+        rlv_render_logical_rows(c, row, -1);
+        return (UWORD)RLV_CELL_REPAINT_ROW;
+    }
+
+    ops = c->draw_ops;
+    ctx = c->draw_context;
+    use_selected_fill = rlv_row_uses_selected_fill(c, row);
+    back_pen = use_selected_fill
+        ? c->pens.selected_background
+        : c->pens.background;
+
+    clip_pushed = FALSE;
+    clip_ok = TRUE;
+    if (ops->push_clip != 0) {
+        clip_ok = ops->push_clip(ctx, &box);
+        if (clip_ok) {
+            clip_pushed = TRUE;
+        } else {
+            RLV_LOG("render_cell_control fallback row (clip fail)");
+            RLV_BENCH_COUNT(RLV_BENCH_COUNTER_CONTROL_REPAINT_FALLBACKS);
+            rlv_render_logical_rows(c, row, -1);
+            return (UWORD)RLV_CELL_REPAINT_ROW;
+        }
+    }
+
+    /* Restore local background under the control, then shared paint. */
+    ops->set_pens(ctx, back_pen, back_pen);
+    ops->fill_rect(ctx, box.MinX, box.MinY, box.MaxX, box.MaxY);
+    rlv_checkbox_paint(c, row, column, use_selected_fill);
+
+    if (clip_pushed && ops->pop_clip != 0) {
+        ops->pop_clip(ctx);
+    }
+
+    RLV_BENCH_COUNT(RLV_BENCH_COUNTER_CONTROL_ONLY_REDRAWS);
+    RLV_LOG("render_cell_control ok");
+    return (UWORD)RLV_CELL_REPAINT_OK;
 }
 
 #if defined(RLV_ENABLE_SMART_SCROLL) && (RLV_ENABLE_SMART_SCROLL != 0)

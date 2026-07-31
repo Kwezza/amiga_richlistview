@@ -335,3 +335,17 @@ VOID rlv_checkbox_paint(RLV_Control *c,
                               enabled ? FALSE : TRUE);
     }
 }
+
+BOOL rlv_row_uses_selected_fill(const RLV_Control *c, LONG logical_row)
+{
+    if (c == 0 || logical_row < 0) {
+        return FALSE;
+    }
+    if (c->selected_row != logical_row) {
+        return FALSE;
+    }
+    if (c->current_row_visual != (UWORD)RLV_CURRENT_ROW_VISUAL_FULL) {
+        return FALSE;
+    }
+    return TRUE;
+}

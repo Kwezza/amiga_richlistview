@@ -10,16 +10,21 @@
  *
  * Experimental checkbox cells (RLV_COL_TYPE_CHECKBOX): paint from an
  * internal snapshot (first-line band, plain/tick). Verified SELECT_DOWN/UP
- * arm-and-commit:
+ * arm-and-commit (default RLV_CONTROL_ACTIVATE_SELECT_ROW):
  *   SELECT_DOWN on checkbox (other selectable row) may emit
  *   RLV_EVENT_SELECTION_CHANGED and arms; same-row checkbox arms only;
  *   SELECT_UP commit emits RLV_EVENT_CELL_CONTROL only; cancel emits none.
+ * Opt-in RLV_CONTROL_ACTIVATE_KEEP_CURRENT: checkbox SELECT_DOWN arms
+ * without changing the current/selected row, scroll, or emitting
+ * SELECTION_CHANGED; SELECT_UP still emits CELL_CONTROL only.
  * At most one RLV_EventType per handle_input call.
  * Smart-scroll exposed bands repaint snapshot checkboxes; selection +
  * make_visible scroll uses full viewport paint; set_bounds / set_rows /
  * set_columns / layout invalidate cancel arm. Space → RLV_INPUT_TOGGLE
  * toggles the selected row's sole eligible checkbox; Return / NAV_ACTIVATE
  * remains row activation only.
+ * Current-row presentation is separate from selection state via
+ * RLV_CurrentRowVisual (full highlight default; marker; none).
  *
  * Cell-control notification (generic — not checkbox-only):
  *   Completed control actions fill RLV_EVENT_CELL_CONTROL synchronously into
@@ -38,10 +43,11 @@
  * RLV_Row / control_cells and copies descriptors into the control
  * snapshot; the control does not write through borrowed app memory by
  * default. On CELL_CONTROL, update the app store from the event (typically
- * via row_user_data), then call
- * rlv_render_logical_rows(control, row, -1). Use
- * rlv_set_checkbox_value for reject-restore / async snapshot updates
- * without a full set_rows.
+ * via row_user_data), then prefer
+ * rlv_render_cell_control(control, row, column) for a fully visible
+ * checkbox; fall back to rlv_render_logical_rows when that returns a
+ * row/viewport result. Use rlv_set_checkbox_value for reject-restore /
+ * async snapshot updates without a full set_rows, then the same repaint.
  *
  * Authoritative product path for interactive checkboxes is this package.
  * GadTools clv_cellctl_* under the legacy custom_listview tree is legacy /
@@ -85,6 +91,43 @@ typedef enum RLV_RowDividerStyle
 
 /* RLV_Config.flags */
 #define RLV_CFG_NO_KEYBOARD  0x0001U  /* start with NAV_* disabled */
+
+/*
+ * How embedded cell controls interact with the current/selected row.
+ * Default 0 preserves historical SELECT_DOWN selection behaviour.
+ * Policies are presentation/input only — they do not rebuild layout.
+ */
+typedef enum RLV_ControlActivationPolicy
+{
+    RLV_CONTROL_ACTIVATE_SELECT_ROW = 0, /* checkbox may select its row */
+    RLV_CONTROL_ACTIVATE_KEEP_CURRENT    /* checkbox arms/commits without
+                                          * changing current/selected row */
+} RLV_ControlActivationPolicy;
+
+/*
+ * Visual treatment of the current/selected navigation row.
+ * Default 0 is the historical full-row highlight. Independent of
+ * checkbox state and of RLV_ControlActivationPolicy.
+ */
+typedef enum RLV_CurrentRowVisual
+{
+    RLV_CURRENT_ROW_VISUAL_FULL = 0, /* full-row selected fill + text pens */
+    RLV_CURRENT_ROW_VISUAL_MARKER,   /* narrow left-edge marker only */
+    RLV_CURRENT_ROW_VISUAL_NONE      /* no current-row decoration */
+} RLV_CurrentRowVisual;
+
+/*
+ * Result of rlv_render_cell_control. Distinguishes a successful local
+ * paint, nothing visible, documented fallbacks, and hard errors.
+ */
+typedef enum RLV_CellControlRepaintResult
+{
+    RLV_CELL_REPAINT_OK = 0,       /* painted the control rectangle only */
+    RLV_CELL_REPAINT_NOT_VISIBLE,  /* control fully outside viewport */
+    RLV_CELL_REPAINT_ROW,          /* escalated to logical-row regional paint */
+    RLV_CELL_REPAINT_VIEWPORT,     /* escalated to full viewport paint */
+    RLV_CELL_REPAINT_ERROR         /* invalid args / missing layout or ops */
+} RLV_CellControlRepaintResult;
 
 typedef struct RLV_Config
 {
@@ -264,7 +307,7 @@ UWORD rlv_get_row_divider_style(const RLV_Control *c);
 VOID rlv_set_bounds(RLV_Control *c, const struct Rectangle *bounds);
 VOID rlv_set_pens(RLV_Control *c, const struct RLV_Pens *pens);
 VOID rlv_set_selected(RLV_Control *c, LONG logical_row);
-/* Current logical selection, or -1 if none. */
+/* Current logical selection / navigation row, or -1 if none. */
 LONG rlv_get_selected(const RLV_Control *c);
 VOID rlv_make_visible(RLV_Control *c, LONG logical_row);
 
@@ -273,6 +316,24 @@ VOID rlv_make_visible(RLV_Control *c, LONG logical_row);
  * (mouse/scroll unchanged). */
 VOID rlv_set_keyboard_enabled(RLV_Control *c, BOOL enabled);
 BOOL rlv_get_keyboard_enabled(const RLV_Control *c);
+
+/*
+ * Embedded-control activation vs current/selected row. Default
+ * RLV_CONTROL_ACTIVATE_SELECT_ROW. Does not rebuild layout or wrap.
+ * Invalid values are ignored (state unchanged).
+ */
+VOID rlv_set_control_activation_policy(RLV_Control *c, UWORD policy);
+UWORD rlv_get_control_activation_policy(const RLV_Control *c);
+
+/*
+ * Current/selected-row visual style. Default RLV_CURRENT_ROW_VISUAL_FULL.
+ * Presentation only — does not rebuild layout or wrap. Caller must
+ * repaint (typically viewport or affected logical rows) after changing.
+ * Invalid values are ignored. For MARKER, cell_padding_x >= 2 is
+ * recommended so the left-edge bar sits in the text inset.
+ */
+VOID rlv_set_current_row_visual(RLV_Control *c, UWORD visual);
+UWORD rlv_get_current_row_visual(const RLV_Control *c);
 
 /* flags: 0 = full (header + viewport + frame);
  * RLV_RENDER_VIEWPORT_ONLY = scroll/selection update without touching frame. */
@@ -289,6 +350,26 @@ VOID rlv_render(RLV_Control *c, ULONG flags);
 VOID rlv_render_logical_rows(RLV_Control *c,
                                      LONG row_a,
                                      LONG row_b);
+
+/*
+ * Repaint one embedded cell control from the current snapshot without a
+ * layout rebuild. Intended after RLV_EVENT_CELL_CONTROL when only the
+ * control value changed. Does not modify scroll_y, selection, arm state,
+ * or emit events. Does not paint inside handle_input.
+ *
+ * Contract (checkbox today; other control types may reuse later):
+ *   RLV_CELL_REPAINT_OK          — control fully visible; local paint done
+ *   RLV_CELL_REPAINT_NOT_VISIBLE — fully off-screen; nothing drawn
+ *   RLV_CELL_REPAINT_ROW         — escalated to rlv_render_logical_rows
+ *   RLV_CELL_REPAINT_VIEWPORT    — escalated to full viewport paint
+ *   RLV_CELL_REPAINT_ERROR       — invalid args / unresolved geometry
+ *
+ * Partial visibility, stale layout, or missing clip support escalate; the
+ * function never silently leaves stale pixels when a control is visible.
+ */
+UWORD rlv_render_cell_control(RLV_Control *c,
+                                      LONG row,
+                                      UWORD column);
 
 /*
  * Paint after scroll_y changed from previous_scroll_y (already committed).
@@ -310,9 +391,12 @@ VOID rlv_render_scrolled(RLV_Control *c, LONG previous_scroll_y);
  * caller-owned *result (all fields cleared first). Does not paint; does not
  * invoke application callbacks or allocate Exec messages.
  *
- * Checkbox policy (§D.11 / C7): SELECT_DOWN may arm and may emit
+ * Checkbox policy (§D.11 / C7): under default
+ * RLV_CONTROL_ACTIVATE_SELECT_ROW, SELECT_DOWN may arm and may emit
  * SELECTION_CHANGED when the selectable row actually changes;
- * already-selected checkbox SELECT_DOWN arms with no selection event;
+ * already-selected checkbox SELECT_DOWN arms with no selection event.
+ * Under RLV_CONTROL_ACTIVATE_KEEP_CURRENT, checkbox SELECT_DOWN arms
+ * only (no selection / make_visible / SELECTION_CHANGED).
  * SELECT_UP may emit CELL_CONTROL only (or nothing on cancel);
  * RLV_INPUT_TOGGLE (Space) toggles the selected row when it has exactly one
  * VISIBLE|ENABLED|INTERACTIVE checkbox column — else no event;
@@ -320,8 +404,8 @@ VOID rlv_render_scrolled(RLV_Control *c, LONG previous_scroll_y);
  *
  * On CELL_CONTROL the application should inspect control_type /
  * control_action (checkbox today: CHECKBOX + VALUE_CHANGED), update its
- * authoritative store (typically via row_user_data), then call
- * rlv_render_logical_rows(c, result->row, -1). Future button /
+ * authoritative store (typically via row_user_data), then prefer
+ * rlv_render_cell_control(c, result->row, result->column). Future button /
  * cycle commits are expected to reuse this same return path.
  */
 BOOL rlv_handle_input(RLV_Control *c,

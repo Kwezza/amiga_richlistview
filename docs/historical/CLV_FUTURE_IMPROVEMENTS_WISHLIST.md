@@ -9,6 +9,12 @@ These ideas are intended to preserve the component's modular design: application
 
 ## 1. Control Activation Without Full-Row Highlighting
 
+**Status (RichListview):** Implemented as an opt-in policy set — see
+`RLV_ControlActivationPolicy`, `RLV_CurrentRowVisual`, and
+`rlv_render_cell_control` in `rich_listview.h`, plus the demo keys `A` / `V`
+and CLI `KEEPCURRENT` / `MARKER` / `NOVISUAL`. Broader wishlist ideas below
+(expanded rows, alternate focus glyphs, etc.) remain future work.
+
 ### Motivation
 
 Interactive cells such as checkboxes may represent the application's primary action, while the full-row highlight represents only navigation or focus.

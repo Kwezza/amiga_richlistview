@@ -121,7 +121,7 @@ Generic control code never calls Amiga drawing APIs directly. Pens are semantic 
      rlv_handle_input(control, &in, &ev)
      switch (ev.type):
        SELECTION_CHANGED → regional or full repaint
-       CELL_CONTROL      → update app store; render_logical_rows
+       CELL_CONTROL      → update app store; rlv_render_cell_control
        ACTIVATED         → app action (Return)
        scroll change     → rlv_render_scrolled or full paint
 5. On resize: rlv_set_bounds → full control repaint (never smart-scroll)
@@ -144,7 +144,7 @@ IDCMP → RLV_InputEvent → rlv_handle_input() → RLV_Event (caller stack)
 - The application owns the authoritative row text and checkbox Booleans.
 - `rlv_set_rows` **borrows** `RLV_Row` / cell pointers and **copies** control descriptors into an internal snapshot.
 - By default the control does **not** write through borrowed application memory.
-- On `RLV_EVENT_CELL_CONTROL`, the app updates its store (often via `row_user_data`), then calls `rlv_render_logical_rows`.
+- On `RLV_EVENT_CELL_CONTROL`, the app updates its store (often via `row_user_data`), then prefers `rlv_render_cell_control`.
 - `rlv_set_checkbox_value` updates the snapshot only (reject-restore / async), without a full `set_rows`.
 
 ### 2.6 Painting modes
@@ -153,6 +153,7 @@ IDCMP → RLV_InputEvent → rlv_handle_input() → RLV_Event (caller stack)
 |-----|-------------|
 | `rlv_render` | Full control (header + viewport + frame), or viewport-only flag |
 | `rlv_render_logical_rows` | Selection change with unchanged `scroll_y` |
+| `rlv_render_cell_control` | Checkbox-only repaint after `CELL_CONTROL` when fully visible |
 | `rlv_render_scrolled` | After a pure scroll change; may smart-scroll |
 
 Smart scroll (when compiled in) tries a viewport pixel shift plus exposed-band repaint. Large or unsafe scrolls fall back to a full viewport paint. Selection that also moves `scroll_y` (for example `make_visible`) must use a full viewport paint — never smart scroll.
@@ -161,11 +162,23 @@ Smart scroll (when compiled in) tries a viewport pixel shift plus exposed-band r
 
 1. Mark a column with `RLV_COL_TYPE_CHECKBOX`.
 2. Supply parallel `RLV_Cell` descriptors on each row (`control_cells`).
-3. Mouse: `SELECT_DOWN` may select and arm; `SELECT_UP` may commit `CELL_CONTROL`.
-4. Space: `RLV_INPUT_TOGGLE` toggles the selected row when it has exactly one eligible checkbox.
-5. Return / `NAV_ACTIVATE` activates the row only — it never toggles.
+3. Mouse: `SELECT_DOWN` may select and arm (default); `SELECT_UP` may commit `CELL_CONTROL`.
+4. Opt-in `RLV_CONTROL_ACTIVATE_KEEP_CURRENT`: checkbox arm/commit leaves the current/selected row and scroll unchanged.
+5. Space: `RLV_INPUT_TOGGLE` toggles the selected row when it has exactly one eligible checkbox.
+6. Return / `NAV_ACTIVATE` activates the row only — it never toggles.
+7. After `CELL_CONTROL`, prefer `rlv_render_cell_control` for a fully visible checkbox; it escalates to row/viewport paint when local restore is unsafe.
+8. Current-row presentation is independent via `RLV_CurrentRowVisual` (`FULL` default, `MARKER`, `NONE`).
 
----
+### 2.8 Control activation and current-row visuals
+
+| Concept | API | Default |
+|---------|-----|---------|
+| Current / navigation row | `rlv_get_selected` / `rlv_set_selected` | unchanged meaning |
+| Control activation policy | `rlv_set_control_activation_policy` | `SELECT_ROW` (legacy) |
+| Current-row visual | `rlv_set_current_row_visual` | `FULL` (legacy highlight) |
+| Local control repaint | `rlv_render_cell_control` | escalates when unsafe |
+
+Changing either policy is presentation/input only — it does **not** rebuild wrapping or row heights. Marker mode draws a narrow left-edge bar with the selected-background pen; `cell_padding_x >= 2` is recommended so the marker sits in the text inset.
 
 ## 3. How the compile system selects what you pay for
 

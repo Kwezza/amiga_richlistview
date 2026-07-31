@@ -203,6 +203,9 @@ RLV_Control *rlv_create(const RLV_Config *cfg)
     c->selected_row = -1;
     c->scroll_y = 0;
     c->keyboard_enabled = TRUE;
+    c->control_activation_policy =
+        (UWORD)RLV_CONTROL_ACTIVATE_SELECT_ROW;
+    c->current_row_visual = (UWORD)RLV_CURRENT_ROW_VISUAL_FULL;
     c->control_armed = FALSE;
     c->armed_row = -1;
     c->armed_column = 0;
@@ -470,6 +473,49 @@ VOID rlv_set_pens(RLV_Control *c, const struct RLV_Pens *pens)
         return;
     }
     c->pens = *pens;
+}
+
+VOID rlv_set_control_activation_policy(RLV_Control *c, UWORD policy)
+{
+    if (c == 0) {
+        return;
+    }
+    if (policy != (UWORD)RLV_CONTROL_ACTIVATE_SELECT_ROW
+        && policy != (UWORD)RLV_CONTROL_ACTIVATE_KEEP_CURRENT) {
+        return;
+    }
+    c->control_activation_policy = policy;
+    RLV_LOGF("control_activation_policy=%u", (unsigned)policy);
+}
+
+UWORD rlv_get_control_activation_policy(const RLV_Control *c)
+{
+    if (c == 0) {
+        return (UWORD)RLV_CONTROL_ACTIVATE_SELECT_ROW;
+    }
+    return c->control_activation_policy;
+}
+
+VOID rlv_set_current_row_visual(RLV_Control *c, UWORD visual)
+{
+    if (c == 0) {
+        return;
+    }
+    if (visual != (UWORD)RLV_CURRENT_ROW_VISUAL_FULL
+        && visual != (UWORD)RLV_CURRENT_ROW_VISUAL_MARKER
+        && visual != (UWORD)RLV_CURRENT_ROW_VISUAL_NONE) {
+        return;
+    }
+    c->current_row_visual = visual;
+    RLV_LOGF("current_row_visual=%u", (unsigned)visual);
+}
+
+UWORD rlv_get_current_row_visual(const RLV_Control *c)
+{
+    if (c == 0) {
+        return (UWORD)RLV_CURRENT_ROW_VISUAL_FULL;
+    }
+    return c->current_row_visual;
 }
 
 VOID rlv_render(RLV_Control *c, ULONG flags)

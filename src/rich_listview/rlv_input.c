@@ -671,10 +671,11 @@ BOOL rlv_handle_input(RLV_Control *c,
 
         /*
          * C5 / §D.11 verified-click selection vs checkbox:
-         *  - Checkbox hit, other selectable row → arm + SELECTION_CHANGED
-         *    when selection actually changes (never drop a real change).
-         *  - Checkbox hit, already selected (or nonselectable) → arm only;
-         *    no SELECTION_CHANGED.
+         *  - Default SELECT_ROW: checkbox hit on other selectable row →
+         *    arm + SELECTION_CHANGED when selection changes.
+         *  - KEEP_CURRENT: checkbox hit → arm only (no selection /
+         *    make_visible / SELECTION_CHANGED); commit still on SELECT_UP.
+         *  - Checkbox hit, already selected (or nonselectable) → arm only.
          *  - Outside box → clear arm; existing row-selection path.
          * Toggle is SELECT_UP only (CELL_CONTROL); never merged here.
          */
@@ -684,8 +685,17 @@ BOOL rlv_handle_input(RLV_Control *c,
                                                    &cb_row, &cb_col);
         if (cb_hit) {
             rlv_arm_checkbox(c, cb_row, cb_col);
-            RLV_LOGF("SELECT_DOWN arm row=%ld col=%u",
-                     (long)cb_row, (unsigned)cb_col);
+            RLV_LOGF("SELECT_DOWN arm row=%ld col=%u policy=%u",
+                     (long)cb_row, (unsigned)cb_col,
+                     (unsigned)c->control_activation_policy);
+
+            if (c->control_activation_policy
+                == (UWORD)RLV_CONTROL_ACTIVATE_KEEP_CURRENT) {
+                RLV_LOGF("SELECT_DOWN keep_current arm_only selected=%ld",
+                         (long)c->selected_row);
+                RLV_BENCH_END(RLV_BENCH_KEY_EVENT_TOTAL, bench_key_total);
+                return FALSE;
+            }
 
             if (!rlv_row_selectable(c, cb_row)) {
                 RLV_LOGF("SELECT_DOWN checkbox nonselectable flags=0x%lx arm_only",

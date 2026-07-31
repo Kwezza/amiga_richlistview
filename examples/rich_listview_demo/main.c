@@ -13,13 +13,17 @@
  *   - Pixel SCROLLER_KIND synced to scroll_y (line/page/proportional)
  *   - Resizable window: IDCMP_NEWSIZE relayout + full control repaint
  *   - Experimental checkbox column (On): verified SELECT_DOWN/UP;
- *     other-row checkbox may emit SELECTION_CHANGED then CELL_CONTROL;
- *     same-row arms only; cancel emits none. Space → RLV_INPUT_TOGGLE;
- *     Return → NAV_ACTIVATE only. Interactive / display-only / disabled
- *     rows. App owns authoritative Booleans (user_data); on CELL_CONTROL
- *     sync the store then rlv_render_logical_rows.
+ *     default other-row checkbox may emit SELECTION_CHANGED then
+ *     CELL_CONTROL; same-row arms only; cancel emits none.
+ *     Opt-in KEEP_CURRENT: checkbox arms/commits without moving the
+ *     current row. Space → RLV_INPUT_TOGGLE; Return → NAV_ACTIVATE only.
+ *     Keys A / V cycle activation policy and current-row visual.
+ *     Interactive / display-only / disabled rows. App owns authoritative
+ *     Booleans (user_data); on CELL_CONTROL sync the store then
+ *     rlv_render_cell_control (row fallback when needed).
  *   - Read-only TEXT_KIND status field under the ListView showing the
  *     latest RLV_EVENT_CELL_CONTROL (GT_SetGadgetAttrs / GTTX_Text).
+ *     Policy changes also update this status line.
  *
  * Required modules: rlv_*.o (incl. wrap + checkbox), rlv_backend_amiga_v36.o,
  *                   rlv_platform.o
@@ -73,6 +77,8 @@ long __stack = 80000L;
 /* Classic Return / Space raw keys (not OS3.2-only names). */
 #define DEMO_RAWKEY_RETURN  0x44
 #define DEMO_RAWKEY_SPACE   0x40
+#define DEMO_RAWKEY_A       0x20
+#define DEMO_RAWKEY_V       0x34
 
 /* Interior padding around the control + scroller strip. */
 #define DEMO_PAD              8
@@ -94,6 +100,10 @@ static UWORD g_demo_divider_style = (UWORD)RLV_ROW_DIVIDER_SOLID;
 static UWORD g_demo_padding_x = 1;
 static UWORD g_demo_padding_y = 1;
 static UWORD g_demo_row_gap = 0;
+static UWORD g_demo_activation_policy =
+    (UWORD)RLV_CONTROL_ACTIVATE_SELECT_ROW;
+static UWORD g_demo_current_row_visual =
+    (UWORD)RLV_CURRENT_ROW_VISUAL_FULL;
 static STRPTR g_demo_divider_labels[] = {
     "Div: None", "Div: Solid", "Div: Dotted", NULL
 };
@@ -477,6 +487,106 @@ static CONST_STRPTR demo_control_action_name(UWORD action)
         return "PRESSED";
     }
     return "NONE";
+}
+
+static CONST_STRPTR demo_activation_policy_name(UWORD policy)
+{
+    if (policy == (UWORD)RLV_CONTROL_ACTIVATE_KEEP_CURRENT) {
+        return "KEEP_CURRENT";
+    }
+    return "SELECT_ROW";
+}
+
+static CONST_STRPTR demo_current_row_visual_name(UWORD visual)
+{
+    if (visual == (UWORD)RLV_CURRENT_ROW_VISUAL_MARKER) {
+        return "MARKER";
+    }
+    if (visual == (UWORD)RLV_CURRENT_ROW_VISUAL_NONE) {
+        return "NONE";
+    }
+    return "FULL";
+}
+
+static VOID demo_update_status_text(struct Window *win, CONST_STRPTR text)
+{
+    if (win == 0 || text == 0) {
+        return;
+    }
+    strncpy(g_demo_event_text, text, (size_t)(DEMO_EVENT_TEXT_LEN - 1));
+    g_demo_event_text[DEMO_EVENT_TEXT_LEN - 1] = '\0';
+    if (g_demo_event_status_gad != 0) {
+        GT_SetGadgetAttrs(g_demo_event_status_gad,
+                          win,
+                          NULL,
+                          GTTX_Text, (ULONG)g_demo_event_text,
+                          TAG_DONE);
+    }
+}
+
+static VOID demo_apply_policies(RLV_Control *control)
+{
+    if (control == 0) {
+        return;
+    }
+    rlv_set_control_activation_policy(control, g_demo_activation_policy);
+    rlv_set_current_row_visual(control, g_demo_current_row_visual);
+}
+
+static VOID demo_cycle_activation_policy(struct Window *win,
+                                         RLV_Control *control)
+{
+    if (g_demo_activation_policy
+        == (UWORD)RLV_CONTROL_ACTIVATE_SELECT_ROW) {
+        g_demo_activation_policy =
+            (UWORD)RLV_CONTROL_ACTIVATE_KEEP_CURRENT;
+    } else {
+        g_demo_activation_policy =
+            (UWORD)RLV_CONTROL_ACTIVATE_SELECT_ROW;
+    }
+    if (control != 0) {
+        rlv_set_control_activation_policy(control,
+                                          g_demo_activation_policy);
+    }
+    sprintf(g_demo_event_text, "Activation: %s (A toggles)",
+            demo_activation_policy_name(g_demo_activation_policy));
+    g_demo_event_text[DEMO_EVENT_TEXT_LEN - 1] = '\0';
+    demo_update_status_text(win, g_demo_event_text);
+    printf("%s\n", g_demo_event_text);
+    fflush(stdout);
+    RLV_LOGF("demo activation_policy=%u",
+             (unsigned)g_demo_activation_policy);
+}
+
+static VOID demo_cycle_current_row_visual(struct Window *win,
+                                          RLV_Control *control)
+{
+    if (g_demo_current_row_visual
+        == (UWORD)RLV_CURRENT_ROW_VISUAL_FULL) {
+        g_demo_current_row_visual =
+            (UWORD)RLV_CURRENT_ROW_VISUAL_MARKER;
+    } else if (g_demo_current_row_visual
+               == (UWORD)RLV_CURRENT_ROW_VISUAL_MARKER) {
+        g_demo_current_row_visual =
+            (UWORD)RLV_CURRENT_ROW_VISUAL_NONE;
+    } else {
+        g_demo_current_row_visual =
+            (UWORD)RLV_CURRENT_ROW_VISUAL_FULL;
+    }
+    if (control != 0) {
+        rlv_set_current_row_visual(control, g_demo_current_row_visual);
+        /* Presentation-only: repaint viewport, no layout rebuild. */
+        rlv_render(control, RLV_RENDER_VIEWPORT_ONLY);
+    }
+    sprintf(g_demo_event_text,
+            "Row visual: %s (V cycles; X Pad>=2 recommended for MARKER)",
+            demo_current_row_visual_name(g_demo_current_row_visual));
+    g_demo_event_text[DEMO_EVENT_TEXT_LEN - 1] = '\0';
+    demo_update_status_text(win, g_demo_event_text);
+    printf("%s\n", g_demo_event_text);
+    fflush(stdout);
+    RLV_LOGF("demo current_row_visual=%u",
+             (unsigned)g_demo_current_row_visual);
 }
 
 /*
@@ -1579,24 +1689,33 @@ static BOOL demo_apply_input(RLV_Control *control,
         fflush(stdout);
         demo_update_event_status(win, &ev);
         /*
-         * Integrator pattern on CELL_CONTROL (§D.11 / C8 / E2):
+         * Integrator pattern on CELL_CONTROL:
          *   1) Sync the app-owned authoritative Boolean via row_user_data
          *      (control already mutated its internal snapshot only).
-         *   2) rlv_render_logical_rows(control, ev.row, -1)
-         * Selection (if any) already arrived on a prior SELECT_DOWN call;
-         * never merged into this event.
+         *   2) Prefer rlv_render_cell_control; escalate only when that
+         *      reports ROW / VIEWPORT. Selection (if any) already arrived
+         *      on a prior SELECT_DOWN call under SELECT_ROW policy.
          */
         if (ev.row_user_data != NULL) {
             *(UBYTE *)ev.row_user_data = ev.cell_value;
         }
-        RLV_BENCH_COUNT(RLV_BENCH_COUNTER_PARTIAL_REDRAWS);
-        RLV_LOGF("CELL_CONTROL store sync + row paint row=%ld col=%u "
-                 "type=%u action=%u val=%u",
-                 (long)ev.row, (unsigned)ev.column,
-                 (unsigned)ev.control_type,
-                 (unsigned)ev.control_action,
-                 (unsigned)ev.cell_value);
-        rlv_render_logical_rows(control, ev.row, -1);
+        {
+            UWORD repaint;
+
+            repaint = rlv_render_cell_control(control, ev.row, ev.column);
+            RLV_LOGF("CELL_CONTROL store sync + cell paint row=%ld col=%u "
+                     "type=%u action=%u val=%u result=%u selected=%ld",
+                     (long)ev.row, (unsigned)ev.column,
+                     (unsigned)ev.control_type,
+                     (unsigned)ev.control_action,
+                     (unsigned)ev.cell_value,
+                     (unsigned)repaint,
+                     (long)rlv_get_selected(control));
+            if (repaint == (UWORD)RLV_CELL_REPAINT_ERROR) {
+                rlv_render_logical_rows(control, ev.row, -1);
+            }
+            /* OK / NOT_VISIBLE / ROW / VIEWPORT handled by the API. */
+        }
         demo_sync_scroller(win, scroller, control, last_top);
         return TRUE;
     } else if (ev.type == (UWORD)RLV_EVENT_ACTIVATED) {
@@ -1749,6 +1868,10 @@ static BOOL demo_recreate_control(RLV_Control **control_io,
         scroll_y = rlv_get_scroll_y(old_control);
         keyboard_enabled =
             rlv_get_keyboard_enabled(old_control);
+        g_demo_activation_policy =
+            rlv_get_control_activation_policy(old_control);
+        g_demo_current_row_visual =
+            rlv_get_current_row_visual(old_control);
     }
 
     memset(&cfg, 0, sizeof(cfg));
@@ -1775,6 +1898,7 @@ static BOOL demo_recreate_control(RLV_Control **control_io,
     }
 
     rlv_set_bounds(new_control, bounds);
+    demo_apply_policies(new_control);
     rlv_set_selected(new_control, selected);
     rlv_set_scroll_y(new_control, scroll_y);
 
@@ -1847,6 +1971,18 @@ int main(int argc, char **argv)
             } else if (strcmp(argv[i], "NOKEYBOARD") == 0
                        || strcmp(argv[i], "nokeyboard") == 0) {
                 keyboard_off = TRUE;
+            } else if (strcmp(argv[i], "KEEPCURRENT") == 0
+                       || strcmp(argv[i], "keepcurrent") == 0) {
+                g_demo_activation_policy =
+                    (UWORD)RLV_CONTROL_ACTIVATE_KEEP_CURRENT;
+            } else if (strcmp(argv[i], "MARKER") == 0
+                       || strcmp(argv[i], "marker") == 0) {
+                g_demo_current_row_visual =
+                    (UWORD)RLV_CURRENT_ROW_VISUAL_MARKER;
+            } else if (strcmp(argv[i], "NOVISUAL") == 0
+                       || strcmp(argv[i], "novisual") == 0) {
+                g_demo_current_row_visual =
+                    (UWORD)RLV_CURRENT_ROW_VISUAL_NONE;
             }
         }
     }
@@ -1870,6 +2006,9 @@ int main(int argc, char **argv)
     if (keyboard_off) {
         RLV_LOG("NOKEYBOARD: NAV_* disabled");
     }
+    RLV_LOGF("startup activation_policy=%u visual=%u",
+             (unsigned)g_demo_activation_policy,
+             (unsigned)g_demo_current_row_visual);
 
     screen = LockPubScreen(NULL);
     if (screen == 0) {
@@ -2155,6 +2294,7 @@ int main(int argc, char **argv)
 
     demo_bounds_from_geom(&geom, &bounds);
     rlv_set_bounds(control, &bounds);
+    demo_apply_policies(control);
     /* Single-control demo: first instance is initially active. */
     active_control = control;
     if (keyboard_off) {
@@ -2168,7 +2308,12 @@ int main(int argc, char **argv)
     printf("Phase 5.5 custom control: keyboard nav + resize + scroll sync.\n");
     printf("Cursor Up/Down = prev/next; Shift+cursor = page; Ctrl+cursor = first/last.\n");
     printf("Return activates selection; Space toggles sole checkbox. Click control for focus.\n");
+    printf("A = toggle activation policy (SELECT_ROW / KEEP_CURRENT).\n");
+    printf("V = cycle current-row visual (FULL / MARKER / NONE).\n");
     printf("Row 3 (-- Category --) is non-selectable.\n");
+    printf("Activation=%s  Visual=%s\n",
+           demo_activation_policy_name(g_demo_activation_policy),
+           demo_current_row_visual_name(g_demo_current_row_visual));
     if (keyboard_off) {
         printf("NOKEYBOARD: keyboard NAV_* disabled (mouse/scroller still work).\n");
     } else {
@@ -2289,9 +2434,20 @@ int main(int argc, char **argv)
                     }
                 }
             } else if (class == IDCMP_RAWKEY) {
-                if (active_control != 0
-                    && rlv_get_keyboard_enabled(active_control)
-                    && demo_translate_rawkey(code, qual, &inev)) {
+                UWORD key;
+
+                key = (UWORD)(code & ~IECODE_UP_PREFIX);
+                if ((code & IECODE_UP_PREFIX) == 0
+                    && active_control != 0
+                    && key == DEMO_RAWKEY_A) {
+                    demo_cycle_activation_policy(win, active_control);
+                } else if ((code & IECODE_UP_PREFIX) == 0
+                           && active_control != 0
+                           && key == DEMO_RAWKEY_V) {
+                    demo_cycle_current_row_visual(win, active_control);
+                } else if (active_control != 0
+                           && rlv_get_keyboard_enabled(active_control)
+                           && demo_translate_rawkey(code, qual, &inev)) {
                     RLV_LOGF("RAWKEY code=0x%04x qual=0x%04x -> input type=%u",
                              (unsigned)code, (unsigned)qual,
                              (unsigned)inev.type);
