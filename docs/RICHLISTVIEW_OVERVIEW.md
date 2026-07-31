@@ -105,6 +105,8 @@ Generic control code never calls Amiga drawing APIs directly. Pens are semantic 
 | `rlv_input.c` | Hit-test, selection, `NAV_*`, checkbox arm/commit |
 | `rlv_scroll.c` | `scroll_y` / content / viewport height accessors |
 | `rlv_checkbox.c` | Checkbox geometry, snapshot paint, helpers |
+| `rlv_expand.c` | Optional expandable-row state, API, reheight/anchor |
+| `rlv_disclosure.c` | Optional +/- disclosure cell paint / resolve |
 | `rlv_platform.c` | Allocator and platform helpers |
 | `backends/rlv_backend_amiga_v36.c` | `RLV_DrawOps` implementation for classic Amiga |
 | `rlv_log.c` | Optional logger — linked only in logging builds |
@@ -180,6 +182,31 @@ Smart scroll (when compiled in) tries a viewport pixel shift plus exposed-band r
 
 Changing either policy is presentation/input only — it does **not** rebuild wrapping or row heights. Marker mode draws a narrow left-edge bar with the selected-background pen; `cell_padding_x >= 2` is recommended so the marker sits in the text inset.
 
+### 2.9 Expandable / collapsible rows (optional)
+
+When `RLV_ENABLE_EXPANDABLE_ROWS` is enabled (Makefile default):
+
+1. Mark rows with `RLV_ROW_EXPANDABLE` and optionally `RLV_ROW_EXPANDED`.
+2. Add a narrow `RLV_COL_TYPE_DISCLOSURE` column; set cell flags
+   `VISIBLE|ENABLED|INTERACTIVE` on expandable rows (empty otherwise).
+3. Collapsed expandable rows use one compact display line (first wrap
+   fragment); expanded rows use the full wrapped height.
+4. Mouse: disclosure arm/commit emits `CELL_CONTROL` with
+   `DISCLOSURE` + `EXPANDED`/`COLLAPSED` and does not select the row or
+   toggle checkboxes.
+5. Keyboard: Right expands, Left collapses the current row; Up/Down never
+   auto-expand. Key `C` in the demo calls `rlv_collapse_all`.
+6. Programmatic `rlv_expand_row` / `rlv_collapse_row` / `rlv_toggle_row` /
+   `rlv_collapse_all` update layout/scroll but do not emit `CELL_CONTROL`.
+7. After disclosure events or API calls, prefer `rlv_render_from_row`
+   with the pre-toggle scroll. When smart scroll is enabled it may
+   ScrollRaster rows below the toggle and repaint only the toggled row
+   plus an exposed band; otherwise it paints a viewport tail. Falls back
+   to a full viewport paint when scroll moved or the blit is unsafe.
+   Multiple rows may remain expanded.
+
+Expansion, checkbox, selection, and current-row visual states stay independent.
+
 ## 3. How the compile system selects what you pay for
 
 Classic Amiga binaries are size-sensitive. RichListview keeps optional cost out of normal builds in three ways: **explicit object lists**, **compile-time feature macros**, and **isolated object trees** so differently configured objects never mix.
@@ -202,6 +229,13 @@ backends/rlv_backend_amiga_v36.o
 rlv_platform.o
 ```
 
+When `RLV_ENABLE_EXPANDABLE_ROWS=1` (default), also:
+
+```text
+rlv_expand.o
+rlv_disclosure.o
+```
+
 **Linked only when that variant needs them:**
 
 | Object | When linked |
@@ -217,6 +251,7 @@ Legacy GadTools enhancer objects, ASCII formatters, binders, selection adapters,
 |-------|---------|--------|
 | `RLV_PLATFORM_AMIGA=1` | always (Makefile) | Platform assert / Amiga path |
 | `RLV_ENABLE_SMART_SCROLL` | `1` | Include smart-scroll paint and backend `ScrollRaster` helpers |
+| `RLV_ENABLE_EXPANDABLE_ROWS` | `1` | Link expand/disclosure modules; compact collapsed rows |
 | `RLV_ENABLE_LOGGING` | off | Logger APIs become real; macros expand to writes |
 | `RLV_ENABLE_BENCHMARKS` | off | Benchmark instrumentation and `rlv_bench.c` |
 
@@ -271,6 +306,7 @@ Overriding `RLV_ENABLE_SMART_SCROLL` on the ordinary `rich-listview-demo` target
 | Core control + layout + wrap + input + scroll | No | Always required |
 | Amiga V36 backend | Required for Amiga demos | Only backend shipped today |
 | Checkbox module | No (always linked) | No `RLV_ENABLE_CTRL_CHECKBOX` omit flag yet |
+| Expandable rows | Yes | `RLV_ENABLE_EXPANDABLE_ROWS=0` omits modules |
 | Smart scroll | Yes | Prefer `rich-listview-demo-nosmart` |
 | Diagnostic logging | Yes | `-log` target; macros no-op otherwise |
 | Benchmarks | Yes | `-bench` target only |

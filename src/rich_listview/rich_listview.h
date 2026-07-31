@@ -52,6 +52,26 @@
  * Authoritative product path for interactive checkboxes is this package.
  * GadTools clv_cellctl_* under the legacy custom_listview tree is legacy /
  * non-authoritative (frozen; do not extend for new apps).
+ *
+ * Optional expandable rows (RLV_ENABLE_EXPANDABLE_ROWS, default on):
+ *   Mark rows with RLV_ROW_EXPANDABLE and optionally RLV_ROW_EXPANDED.
+ *   Add a narrow RLV_COL_TYPE_DISCLOSURE column for +/- controls (cell
+ *   flags VISIBLE|ENABLED|INTERACTIVE on expandable rows; empty otherwise).
+ *   Collapsed expandable rows use one compact display line; expanded rows
+ *   use the full wrapped layout. Multiple rows may stay expanded.
+ *   Disclosure +/- is drawn only when the prepared wrap has more than one
+ *   display line (single-line expandable rows leave an empty cell so the
+ *   control is not a visual no-op; resize may reveal multi-line wrap).
+ *   Expansion, checkbox, selection, and focus states are independent.
+ *   Mouse: arm/commit on the disclosure control (same verified-click model
+ *   as checkboxes) emits CELL_CONTROL with DISCLOSURE + EXPANDED/COLLAPSED;
+ *   does not select the row or toggle checkboxes. Keyboard: Right expands,
+ *   Left collapses the current row (no-ops when inapplicable); Up/Down never
+ *   auto-expand. Programmatic rlv_expand_row / rlv_collapse_row /
+ *   rlv_toggle_row / rlv_collapse_all do not emit CELL_CONTROL (same policy
+ *   as rlv_set_checkbox_value). Layout rebuild and viewport anchoring run
+ *   inside those APIs and the input path; the application must repaint
+ *   (typically full viewport) after a disclosure CELL_CONTROL or API call.
  */
 
 #include "rich_listview/rlv_draw.h"
@@ -143,12 +163,19 @@ typedef struct RLV_Config
 
 /* RLV_Row.flags */
 #define RLV_ROW_NONSELECTABLE  0x0001U
+#define RLV_ROW_EXPANDABLE     0x0002U  /* may collapse/expand */
+#define RLV_ROW_EXPANDED       0x0004U  /* meaningful only with EXPANDABLE */
 
 /* RLV_Column.flags — low nibble is column type (C2). */
 #define RLV_COL_TYPE_MASK      0x000FU
 #define RLV_COL_TYPE_TEXT      0x0000U
 #define RLV_COL_TYPE_CHECKBOX  0x0001U
+#define RLV_COL_TYPE_DISCLOSURE 0x0002U /* +/- expand control */
 /* Higher bits of RLV_Column.flags reserved for independent behaviours. */
+
+/* Compact expand-state values (CELL_CONTROL previous_value / cell_value). */
+#define RLV_CELL_COLLAPSED  0U
+#define RLV_CELL_EXPANDED   1U
 
 /* RLV_Cell.flags */
 #define RLV_CELL_F_VISIBLE       0x01U
@@ -170,21 +197,25 @@ typedef struct RLV_Column
 
 /*
  * Optional per-cell control descriptor (length == column_count when non-NULL).
- * Entries for non-checkbox columns are ignored (flags/value zero).
+ * Entries for non-control columns are ignored (flags/value zero).
+ * Checkbox: value is UNCHECKED/CHECKED. Disclosure: value unused (row flags
+ * own expansion); flags still gate visibility / interactivity.
  * Application memory is borrowed at set_rows; the control copies into an
  * internal snapshot and does not write through this pointer by default.
  */
 typedef struct RLV_Cell
 {
     UBYTE flags;  /* RLV_CELL_F_* */
-    UBYTE value;  /* RLV_CELL_UNCHECKED / CHECKED */
+    UBYTE value;  /* RLV_CELL_UNCHECKED / CHECKED (checkbox) */
 } RLV_Cell;
 
 typedef struct RLV_Row
 {
     CONST_STRPTR *cells;                  /* borrowed; length == column_count */
     const RLV_Cell *control_cells; /* optional; NULL = no controls */
-    UWORD flags;                          /* RLV_ROW_NONSELECTABLE, etc. */
+    UWORD flags;                          /* RLV_ROW_NONSELECTABLE,
+                                           * RLV_ROW_EXPANDABLE,
+                                           * RLV_ROW_EXPANDED, etc. */
     APTR user_data;                       /* optional; borrowed */
 } RLV_Row;
 
@@ -209,7 +240,10 @@ typedef enum RLV_InputType
     RLV_INPUT_NAV_ACTIVATE,
     /* Space: toggle sole eligible checkbox on selected row (C7 / DC-006).
      * Not NAV_ACTIVATE — Return remains row activation only. */
-    RLV_INPUT_TOGGLE
+    RLV_INPUT_TOGGLE,
+    /* Expandable rows: Right / Left on the current row (no auto-expand). */
+    RLV_INPUT_EXPAND_ROW,
+    RLV_INPUT_COLLAPSE_ROW
 } RLV_InputType;
 
 typedef struct RLV_InputEvent
@@ -237,12 +271,15 @@ typedef enum RLV_EventType
 
 /* Action for RLV_EVENT_CELL_CONTROL (orthogonal to RLV_COL_TYPE_*).
  * VALUE_CHANGED: checkbox toggle today; future cycle index change.
- * PRESSED: future stateless button (no required value transition). */
+ * PRESSED: future stateless button (no required value transition).
+ * EXPANDED / COLLAPSED: disclosure commit (mouse or keyboard). */
 typedef enum RLV_CellControlAction
 {
     RLV_ACTION_NONE = 0,
     RLV_ACTION_VALUE_CHANGED,
-    RLV_ACTION_PRESSED
+    RLV_ACTION_PRESSED,
+    RLV_ACTION_EXPANDED,
+    RLV_ACTION_COLLAPSED
 } RLV_CellControlAction;
 
 /*
@@ -294,6 +331,22 @@ BOOL rlv_set_checkbox_value(RLV_Control *control,
                                     LONG row,
                                     UWORD column,
                                     UBYTE value);
+
+/*
+ * Expandable-row operations (no-ops / stubs when
+ * RLV_ENABLE_EXPANDABLE_ROWS is 0). Do not emit CELL_CONTROL.
+ * Expand/collapse of an already-matching state succeeds as a no-op.
+ * Expanding a non-expandable row returns FALSE without changing state.
+ * Invalid row returns FALSE. Layout / scroll are updated; caller paints.
+ * Collapse All rebuilds once after clearing all expanded bits.
+ */
+BOOL rlv_expand_row(RLV_Control *c, LONG row);
+BOOL rlv_collapse_row(RLV_Control *c, LONG row);
+BOOL rlv_toggle_row(RLV_Control *c, LONG row);
+VOID rlv_collapse_all(RLV_Control *c);
+BOOL rlv_is_row_expandable(const RLV_Control *c, LONG row);
+BOOL rlv_is_row_expanded(const RLV_Control *c, LONG row);
+
 VOID rlv_set_cell_padding(RLV_Control *c, UWORD x, UWORD y);
 UWORD rlv_get_cell_padding_x(const RLV_Control *c);
 UWORD rlv_get_cell_padding_y(const RLV_Control *c);
@@ -350,6 +403,24 @@ VOID rlv_render(RLV_Control *c, ULONG flags);
 VOID rlv_render_logical_rows(RLV_Control *c,
                                      LONG row_a,
                                      LONG row_b);
+
+/*
+ * After an expand/collapse height change: prefer a ScrollRaster of content
+ * below the toggled row (when smart scroll is enabled and
+ * expand_old_total_h was captured), then paint the toggled row and any
+ * exposed band. Otherwise repaint from the first line of logical_row
+ * through the viewport bottom. Pass previous_scroll_y from before the
+ * layout change.
+ *
+ * Falls back to a full viewport paint when:
+ *   - previous_scroll_y != current scroll_y (anchor/clamp moved content);
+ *   - the row starts above the viewport top;
+ *   - layout/clip/blit is unsafe.
+ * Header and outer frame are never touched.
+ */
+VOID rlv_render_from_row(RLV_Control *c,
+                                 LONG logical_row,
+                                 LONG previous_scroll_y);
 
 /*
  * Repaint one embedded cell control from the current snapshot without a

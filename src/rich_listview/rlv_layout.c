@@ -387,14 +387,22 @@ static BOOL rlv_layout_rows(RLV_Control *c)
     for (i = 0; i < c->row_count; i++) {
         RLV_BENCH_COUNT(RLV_BENCH_COUNTER_ROW_HEIGHT_CALCS);
         max_lines = 1;
-        for (col = 0; col < c->column_count; col++) {
-            idx = i * (ULONG)c->column_count + (ULONG)col;
-            frag_count = 0;
-            if (c->cell_wraps != 0 && idx < c->cell_wrap_count) {
-                frag_count = c->cell_wraps[idx].frag_count;
-            }
-            if (frag_count > max_lines) {
-                max_lines = frag_count;
+#if defined(RLV_ENABLE_EXPANDABLE_ROWS) && (RLV_ENABLE_EXPANDABLE_ROWS != 0)
+        if (rlv_row_is_collapsed_compact(c, (LONG)i)) {
+            /* Intentional one-line compact height; wrap cache retained. */
+            max_lines = 1;
+        } else
+#endif
+        {
+            for (col = 0; col < c->column_count; col++) {
+                idx = i * (ULONG)c->column_count + (ULONG)col;
+                frag_count = 0;
+                if (c->cell_wraps != 0 && idx < c->cell_wrap_count) {
+                    frag_count = c->cell_wraps[idx].frag_count;
+                }
+                if (frag_count > max_lines) {
+                    max_lines = frag_count;
+                }
             }
         }
 
@@ -417,6 +425,84 @@ static BOOL rlv_layout_rows(RLV_Control *c)
     c->content_height = top;
     return TRUE;
 }
+
+#if defined(RLV_ENABLE_EXPANDABLE_ROWS) && (RLV_ENABLE_EXPANDABLE_ROWS != 0)
+/*
+ * After an expand/collapse state change: recompute heights and top_y from
+ * from_row onward without rewrapping. Entries before from_row stay valid.
+ */
+BOOL rlv_layout_reheight_from(RLV_Control *c, ULONG from_row)
+{
+    ULONG i;
+    UWORD col;
+    LONG top;
+    UWORD line_h;
+    UWORD max_lines;
+    UWORD content_h;
+    UWORD total_h;
+    ULONG idx;
+    UWORD frag_count;
+
+    if (c == 0 || c->layout_rows == 0) {
+        return FALSE;
+    }
+    if (from_row > c->row_count) {
+        return FALSE;
+    }
+    if (c->row_count == 0) {
+        c->content_height = 0;
+        return TRUE;
+    }
+
+    line_h = c->line_height;
+    if (line_h < 1) {
+        line_h = 1;
+    }
+
+    if (from_row == 0) {
+        top = 0;
+    } else {
+        top = c->layout_rows[from_row - 1].top_y
+              + (LONG)c->layout_rows[from_row - 1].total_height;
+    }
+
+    for (i = from_row; i < c->row_count; i++) {
+        RLV_BENCH_COUNT(RLV_BENCH_COUNTER_ROW_HEIGHT_CALCS);
+        max_lines = 1;
+        if (rlv_row_is_collapsed_compact(c, (LONG)i)) {
+            max_lines = 1;
+        } else {
+            for (col = 0; col < c->column_count; col++) {
+                idx = i * (ULONG)c->column_count + (ULONG)col;
+                frag_count = 0;
+                if (c->cell_wraps != 0 && idx < c->cell_wrap_count) {
+                    frag_count = c->cell_wraps[idx].frag_count;
+                }
+                if (frag_count > max_lines) {
+                    max_lines = frag_count;
+                }
+            }
+        }
+
+        content_h = (UWORD)((max_lines * line_h)
+                            + (2 * c->cell_padding_y));
+        total_h = (UWORD)(content_h + c->row_gap);
+
+        c->layout_rows[i].logical_index = i;
+        c->layout_rows[i].top_y = top;
+        c->layout_rows[i].content_height = content_h;
+        c->layout_rows[i].total_height = total_h;
+        c->layout_rows[i].maximum_line_count = max_lines;
+        c->layout_rows[i].flags = 0;
+        top += (LONG)total_h;
+    }
+
+    c->content_height = top;
+    RLV_LOGF("LAYOUT reheight_from=%lu content_h=%ld",
+             (unsigned long)from_row, (long)c->content_height);
+    return TRUE;
+}
+#endif /* RLV_ENABLE_EXPANDABLE_ROWS */
 
 /*
  * Non-transactional rebuild used when layout is already invalid and no

@@ -555,21 +555,40 @@ static VOID rlv_paint_row_content(RLV_Control *c,
             rlv_checkbox_paint(c, (LONG)layout_index, col, use_selected_fill);
             continue;
         }
+#if defined(RLV_ENABLE_EXPANDABLE_ROWS) && (RLV_ENABLE_EXPANDABLE_ROWS != 0)
+        if (c->columns != 0
+            && ((c->columns[col].flags & RLV_COL_TYPE_MASK)
+                == (UWORD)RLV_COL_TYPE_DISCLOSURE)) {
+            rlv_disclosure_paint(c, (LONG)layout_index, col,
+                                      use_selected_fill);
+            continue;
+        }
+#endif
 
         idx = layout_index * (ULONG)c->column_count + (ULONG)col;
         if (c->cell_wraps == 0 || idx >= c->cell_wrap_count) {
             continue;
         }
         cell = &c->cell_wraps[idx];
-        for (line = 0; line < cell->frag_count; line++) {
-            frag = &cell->frags[line];
-            baseline = (WORD)(row_top
-                              + (WORD)c->cell_padding_y
-                              + (WORD)(line * (UWORD)line_h)
-                              + (WORD)c->font_metrics.baseline);
-            /* Viewport baseline rejection lives in rlv_draw_frag;
-             * soft/hardware clip handles glyphs that only partly meet paint. */
-            rlv_draw_frag(c, frag, baseline, text_pen, text_back);
+        {
+            UWORD paint_lines;
+
+            paint_lines = cell->frag_count;
+#if defined(RLV_ENABLE_EXPANDABLE_ROWS) && (RLV_ENABLE_EXPANDABLE_ROWS != 0)
+            /* Collapsed compact: first prepared display line only. */
+            if (rlv_row_is_collapsed_compact(c, (LONG)layout_index)
+                && paint_lines > 1) {
+                paint_lines = 1;
+            }
+#endif
+            for (line = 0; line < paint_lines; line++) {
+                frag = &cell->frags[line];
+                baseline = (WORD)(row_top
+                                  + (WORD)c->cell_padding_y
+                                  + (WORD)(line * (UWORD)line_h)
+                                  + (WORD)c->font_metrics.baseline);
+                rlv_draw_frag(c, frag, baseline, text_pen, text_back);
+            }
         }
     }
 
@@ -829,6 +848,121 @@ VOID rlv_render_logical_rows(RLV_Control *c,
     RLV_LOG("control render_logical_rows end");
 }
 
+#if defined(RLV_ENABLE_SMART_SCROLL) && (RLV_ENABLE_SMART_SCROLL != 0)
+/* Defined with the smart-scroll helpers further below. */
+static BOOL rlv_exposed_band_after_shift(const struct Rectangle *viewport,
+                                              LONG delta_y,
+                                              struct Rectangle *exposed);
+static VOID rlv_expand_exposed_for_glyphs(const RLV_Control *c,
+                                               LONG delta_y,
+                                               struct Rectangle *exposed);
+static BOOL rlv_try_expand_row_shift(RLV_Control *c,
+                                          LONG logical_row,
+                                          LONG screen_top,
+                                          LONG old_total_h);
+#endif
+
+VOID rlv_render_from_row(RLV_Control *c,
+                                 LONG logical_row,
+                                 LONG previous_scroll_y)
+{
+    struct Rectangle area;
+    LONG screen_top;
+    LONG old_total_h;
+    BOOL ok;
+
+    RLV_LOGF("render_from_row begin row=%ld prev_scroll=%ld cur_scroll=%ld",
+             (long)logical_row,
+             (long)previous_scroll_y,
+             (c != 0) ? (long)c->scroll_y : 0L);
+
+    if (c == 0 || c->draw_ops == 0) {
+        RLV_LOG("render_from_row end (null)");
+        return;
+    }
+    if (!c->layout_valid) {
+        RLV_BENCH_NOTE_PREPARE_REBUILD();
+        if (!rlv_layout_rebuild(c)) {
+            RLV_LOG("render_from_row fallback viewport (rebuild fail)");
+            RLV_BENCH_COUNT(RLV_BENCH_COUNTER_FULL_REDRAWS);
+            rlv_render_viewport(c);
+            return;
+        }
+    }
+    if (c->layout_rows == 0
+        || logical_row < 0
+        || (ULONG)logical_row >= c->row_count) {
+        RLV_LOG("render_from_row fallback viewport (bad row)");
+        RLV_BENCH_COUNT(RLV_BENCH_COUNTER_FULL_REDRAWS);
+        rlv_render_viewport(c);
+        return;
+    }
+
+    /*
+     * If scroll moved, rows above the toggle may have shifted on screen —
+     * cannot keep the head of the viewport.
+     */
+    if (previous_scroll_y != c->scroll_y) {
+        RLV_LOGF("render_from_row fallback viewport (scroll %ld -> %ld)",
+                 (long)previous_scroll_y, (long)c->scroll_y);
+#if defined(RLV_ENABLE_EXPANDABLE_ROWS) && (RLV_ENABLE_EXPANDABLE_ROWS != 0)
+        c->expand_old_total_h = 0;
+#endif
+        RLV_BENCH_COUNT(RLV_BENCH_COUNTER_FULL_REDRAWS);
+        rlv_render_viewport(c);
+        return;
+    }
+
+    screen_top = (LONG)c->viewport_bounds.MinY
+                 + c->layout_rows[logical_row].top_y
+                 - c->scroll_y;
+
+    old_total_h = 0;
+#if defined(RLV_ENABLE_EXPANDABLE_ROWS) && (RLV_ENABLE_EXPANDABLE_ROWS != 0)
+    old_total_h = c->expand_old_total_h;
+    c->expand_old_total_h = 0;
+#endif
+
+    if (screen_top < (LONG)c->viewport_bounds.MinY) {
+        /* Row starts above the visible top — unsafe for blit/tail. */
+        RLV_LOG("render_from_row fallback viewport (row above top)");
+        RLV_BENCH_COUNT(RLV_BENCH_COUNTER_FULL_REDRAWS);
+        rlv_render_viewport(c);
+        return;
+    }
+    if (screen_top > (LONG)c->viewport_bounds.MaxY) {
+        RLV_LOG("render_from_row skip (row below viewport)");
+        return;
+    }
+
+#if defined(RLV_ENABLE_SMART_SCROLL) && (RLV_ENABLE_SMART_SCROLL != 0)
+    if (old_total_h > 0
+        && rlv_try_expand_row_shift(c, logical_row, screen_top,
+                                         old_total_h)) {
+        RLV_LOG("render_from_row end (shift blit)");
+        return;
+    }
+#endif
+
+    /*
+     * No blit: paint from the toggled row through the viewport bottom.
+     * Safe when scroll is unchanged (rows above stay put).
+     */
+    area = c->viewport_bounds;
+    area.MinY = (WORD)screen_top;
+
+    RLV_BENCH_COUNT(RLV_BENCH_COUNTER_PARTIAL_REDRAWS);
+    ok = rlv_paint_viewport_area(c, &area);
+    if (!ok) {
+        RLV_LOG("render_from_row fallback viewport (paint fail)");
+        RLV_BENCH_COUNT(RLV_BENCH_COUNTER_FULL_REDRAWS);
+        rlv_render_viewport(c);
+        return;
+    }
+    RLV_LOGF("render_from_row end tail y=%ld..%d",
+             (long)screen_top, (int)c->viewport_bounds.MaxY);
+}
+
 UWORD rlv_render_cell_control(RLV_Control *c,
                                       LONG row,
                                       UWORD column)
@@ -860,7 +994,25 @@ UWORD rlv_render_cell_control(RLV_Control *c,
     }
 
     col_type = (UWORD)(c->columns[column].flags & RLV_COL_TYPE_MASK);
-    if (col_type != (UWORD)RLV_COL_TYPE_CHECKBOX) {
+    if (col_type == (UWORD)RLV_COL_TYPE_CHECKBOX) {
+        /* fall through to local checkbox paint below */
+    }
+#if defined(RLV_ENABLE_EXPANDABLE_ROWS) && (RLV_ENABLE_EXPANDABLE_ROWS != 0)
+    else if (col_type == (UWORD)RLV_COL_TYPE_DISCLOSURE) {
+        /*
+         * Height changed. Prefer tail paint when scroll is unchanged; the
+         * demo/event path should call rlv_render_from_row with the pre-
+         * toggle scroll. Here scroll is already final — use current as
+         * previous so an unchanged scroll gets a tail paint; if expand
+         * clamped scroll, caller should have used render_from_row with the
+         * real previous value instead of this helper.
+         */
+        RLV_LOG("render_cell_control disclosure -> from_row");
+        rlv_render_from_row(c, row, c->scroll_y);
+        return (UWORD)RLV_CELL_REPAINT_VIEWPORT;
+    }
+#endif
+    else {
         RLV_LOG("render_cell_control error (not checkbox)");
         return (UWORD)RLV_CELL_REPAINT_ERROR;
     }
@@ -1094,6 +1246,162 @@ static BOOL rlv_smart_scroll_eligible(const RLV_Control *c,
     if (out_delta != 0) {
         *out_delta = delta;
     }
+    return TRUE;
+}
+
+/*
+ * After expand/collapse: ScrollRaster content below the toggled row by the
+ * height delta, then paint the toggled row and the exposed band.
+ * scroll_dy convention matches smart scroll (positive = bits move up).
+ * Returns TRUE if the blit path completed (including row-only when nothing
+ * lies below to shift). FALSE = caller should use tail/full fallback.
+ */
+static BOOL rlv_try_expand_row_shift(RLV_Control *c,
+                                          LONG logical_row,
+                                          LONG screen_top,
+                                          LONG old_total_h)
+{
+    LONG new_total_h;
+    LONG delta_h;
+    LONG abs_delta;
+    LONG split_y;
+    LONG shift_h;
+    LONG row_bottom;
+    WORD scroll_dy;
+    UWORD move_result;
+    struct Rectangle shift_rect;
+    struct Rectangle row_area;
+    struct Rectangle exposed;
+    BOOL painted;
+
+    if (c == 0 || c->draw_ops == 0 || c->layout_rows == 0) {
+        return FALSE;
+    }
+    if (c->draw_ops->move_viewport_pixels == 0) {
+        return FALSE;
+    }
+    if (old_total_h < 1) {
+        return FALSE;
+    }
+    if (logical_row < 0 || (ULONG)logical_row >= c->row_count) {
+        return FALSE;
+    }
+
+    new_total_h = (LONG)c->layout_rows[logical_row].total_height;
+    delta_h = new_total_h - old_total_h;
+    if (delta_h == 0) {
+        return FALSE;
+    }
+
+    abs_delta = delta_h;
+    if (abs_delta < 0) {
+        abs_delta = -abs_delta;
+    }
+    if (abs_delta > 32767) {
+        return FALSE;
+    }
+
+    /*
+     * split_y = first pixel that must move with rows below.
+     * Expand: old bottom (make room below the short row).
+     * Collapse: new bottom (overwrite the freed strip that still holds
+     * the old tall-row pixels — e.g. selection fill bleeding into Gamma).
+     */
+    split_y = screen_top + old_total_h;
+    if (new_total_h < old_total_h) {
+        split_y = screen_top + new_total_h;
+    }
+    row_bottom = screen_top + new_total_h - 1;
+
+    RLV_LOGF("EXPAND_SHIFT row=%ld old_h=%ld new_h=%ld split=%ld top=%ld",
+             (long)logical_row, (long)old_total_h, (long)new_total_h,
+             (long)split_y, (long)screen_top);
+
+    if (split_y > (LONG)c->viewport_bounds.MaxY) {
+        /* Nothing below visible to shift — paint toggled row only. */
+        row_area = c->viewport_bounds;
+        row_area.MinY = (WORD)screen_top;
+        if (row_bottom < (LONG)c->viewport_bounds.MaxY) {
+            row_area.MaxY = (WORD)row_bottom;
+        }
+        if (row_area.MaxY < row_area.MinY) {
+            return FALSE;
+        }
+        RLV_BENCH_COUNT(RLV_BENCH_COUNTER_PARTIAL_REDRAWS);
+        return rlv_paint_viewport_area(c, &row_area);
+    }
+
+    if (split_y < (LONG)c->viewport_bounds.MinY) {
+        return FALSE;
+    }
+
+    shift_rect = c->viewport_bounds;
+    shift_rect.MinY = (WORD)split_y;
+    shift_h = (LONG)shift_rect.MaxY - (LONG)shift_rect.MinY + 1;
+    if (shift_h < 2 || abs_delta >= shift_h) {
+        RLV_LOG("EXPAND_SHIFT reject delta_ge_shift_rect");
+        return FALSE;
+    }
+
+    /*
+     * Expand (delta_h > 0): content below moves down → ScrollRaster dy < 0.
+     * Collapse (delta_h < 0): content below moves up → dy > 0.
+     */
+    scroll_dy = (WORD)(old_total_h - new_total_h);
+
+    RLV_BENCH_COUNT(RLV_BENCH_COUNTER_SCROLL_COPY_ATTEMPTS);
+    move_result = c->draw_ops->move_viewport_pixels(c->draw_context,
+                                                    &shift_rect,
+                                                    scroll_dy);
+    if (move_result != (UWORD)RLV_VIEWPORT_MOVE_DONE) {
+        RLV_LOGF("EXPAND_SHIFT blit rejected result=%u",
+                 (unsigned)move_result);
+        return FALSE;
+    }
+
+    /* Repaint the toggled row at its new height (includes growth strip). */
+    row_area = c->viewport_bounds;
+    row_area.MinY = (WORD)screen_top;
+    if (row_bottom < (LONG)c->viewport_bounds.MaxY) {
+        row_area.MaxY = (WORD)row_bottom;
+    }
+    painted = FALSE;
+    if (row_area.MaxY >= row_area.MinY) {
+        painted = rlv_paint_viewport_area(c, &row_area);
+        if (!painted) {
+            RLV_LOG("EXPAND_SHIFT row paint fail -> viewport");
+            RLV_BENCH_COUNT(RLV_BENCH_COUNTER_FULL_REDRAWS);
+            rlv_render_viewport(c);
+            if (c->draw_ops->finish_viewport_move != 0) {
+                c->draw_ops->finish_viewport_move(c->draw_context);
+            }
+            return TRUE;
+        }
+    }
+
+    /* Vacated band from the shift (collapse bottom / expand growth). */
+    if (rlv_exposed_band_after_shift(&shift_rect, (LONG)scroll_dy,
+                                          &exposed)) {
+        rlv_expand_exposed_for_glyphs(c, (LONG)scroll_dy, &exposed);
+        RLV_LOGF("EXPAND_SHIFT exposed %d..%d",
+                 (int)exposed.MinY, (int)exposed.MaxY);
+        if (!rlv_paint_viewport_area(c, &exposed)) {
+            RLV_LOG("EXPAND_SHIFT exposed paint fail -> viewport");
+            RLV_BENCH_COUNT(RLV_BENCH_COUNTER_FULL_REDRAWS);
+            rlv_render_viewport(c);
+            if (c->draw_ops->finish_viewport_move != 0) {
+                c->draw_ops->finish_viewport_move(c->draw_context);
+            }
+            return TRUE;
+        }
+    }
+
+    if (c->draw_ops->finish_viewport_move != 0) {
+        c->draw_ops->finish_viewport_move(c->draw_context);
+    }
+
+    RLV_BENCH_COUNT(RLV_BENCH_COUNTER_PARTIAL_REDRAWS);
+    RLV_LOG("EXPAND_SHIFT done");
     return TRUE;
 }
 

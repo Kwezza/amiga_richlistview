@@ -32,6 +32,9 @@
 - Non-selectable logical row (`RLV_ROW_NONSELECTABLE` category row)
 - Experimental checkbox column (`On`) — authoritative product path for
   interactive checkboxes (see integrator section below)
+- Expandable rows: narrow disclosure column (`+/-`), mixed
+  `RLV_ROW_EXPANDABLE` / `RLV_ROW_EXPANDED` flags, Right/Left keyboard,
+  `C` = Collapse All; status line reports disclosure `CELL_CONTROL`
 - Read-only GadTools `TEXT_KIND` status field under the ListView showing
   the latest `RLV_EVENT_CELL_CONTROL` (`GT_SetGadgetAttrs` / `GTTX_Text`)
 - Pixel `SCROLLER_KIND` synced to `scroll_y` (line / proportional; page via core)
@@ -99,6 +102,30 @@ higher so the marker sits in the text inset.
 Changing either policy does **not** rebuild wrapping; `V` triggers a
 viewport repaint only.
 
+## Expandable rows — integrator pattern
+
+Requires `RLV_ENABLE_EXPANDABLE_ROWS=1` (Makefile default).
+
+1. Mark rows with `RLV_ROW_EXPANDABLE` and optionally `RLV_ROW_EXPANDED`.
+2. Add a narrow `RLV_COL_TYPE_DISCLOSURE` column (this demo places it first).
+3. On expandable rows set disclosure cell flags
+   `VISIBLE|ENABLED|INTERACTIVE`; leave non-expandable rows empty so the
+   column stays aligned without a `+/-` glyph.
+4. Collapsed rows show one compact display line (first wrap fragment);
+   expanded rows use the full wrapped layout. Multiple rows may stay
+   expanded. Checkboxes remain usable in both states.
+5. Mouse disclosure uses the same arm/commit model as checkboxes but
+   **does not** change selection. Keyboard: Right expands, Left collapses
+   the current row (no-ops when inapplicable). Up/Down never auto-expand.
+6. On `CELL_CONTROL` with `control_type` DISCLOSURE and action
+   `EXPANDED`/`COLLAPSED`: sync `RLV_ROW_EXPANDED` on the app row, then
+   `rlv_render_from_row(c, row, scroll_before)`. That may block-copy
+   content below the toggled row (smart scroll) or paint a viewport tail;
+   it falls back to a full viewport paint when unsafe.
+7. Programmatic `rlv_expand_row` / `rlv_collapse_row` / `rlv_toggle_row` /
+   `rlv_collapse_all` do not emit events; sync app flags yourself and
+   repaint. Demo key `C` calls Collapse All.
+
 ## Cell-control event notification (integrator contract)
 
 `RLV_EVENT_CELL_CONTROL` is the single application-facing notification for
@@ -128,17 +155,17 @@ IDCMP → RLV_InputEvent → rlv_handle_input() → RLV_Event (stack)
 
 Row kinds in this demo:
 
-| Row | Name | Checkbox |
-|-----|------|----------|
-| 0 Alpha | Interactive | checked |
-| 1 Beta | Interactive | unchecked |
-| 2 Gamma | Interactive (tall wrap) | checked |
-| 3 Category | Non-selectable heading | none |
-| 4 Delta | Display-only (visible+enabled, not interactive) | checked |
-| 5 Epsilon | Interactive (tall wrap) | unchecked |
-| 6 Zeta | Disabled (visible only / ghosted) | checked |
-| 7 Eta | Interactive | checked |
-| 8 Theta | Interactive | unchecked |
+| Row | Name | Disclosure | Checkbox |
+|-----|------|------------|----------|
+| 0 Alpha | Expandable (start collapsed) | `+` | interactive checked |
+| 1 Beta | Expandable (start expanded) | `-` | interactive unchecked |
+| 2 Gamma | Expandable collapsed (tall when open) | `+` | interactive checked |
+| 3 Category | Non-selectable heading | empty | none |
+| 4 Delta | Not expandable | empty | display-only checked |
+| 5 Epsilon | Expandable (start expanded, tall) | `-` | interactive unchecked |
+| 6 Zeta | Expandable collapsed | `+` | disabled/ghosted |
+| 7 Eta | Expandable collapsed | `+` | interactive checked |
+| 8 Theta | Not expandable | empty | interactive unchecked |
 
 ## Keyboard mapping
 
@@ -147,10 +174,12 @@ Row kinds in this demo:
 | Cursor Up / Down | `NAV_PREV` / `NAV_NEXT` (skip non-selectable; no wrap) |
 | Shift + Cursor Up / Down | `NAV_PAGE_UP` / `NAV_PAGE_DOWN` (selection-centric page) |
 | Ctrl + Cursor Up / Down | `NAV_FIRST` / `NAV_LAST` (Ctrl wins over Shift) |
+| Cursor Right / Left | `EXPAND_ROW` / `COLLAPSE_ROW` (current expandable row) |
 | Return (`0x44`) | `NAV_ACTIVATE` when a selectable row is selected |
 | Space (`0x40`) | `RLV_INPUT_TOGGLE` — sole eligible checkbox on selected row |
 | A (`0x20`) | Toggle activation policy (`SELECT_ROW` / `KEEP_CURRENT`) |
 | V (`0x34`) | Cycle current-row visual (`FULL` / `MARKER` / `NONE`) |
+| C (`0x33`) | `rlv_collapse_all` + sync app row flags + viewport paint |
 | Home / End / PgUp / PgDn | Not mapped (not on classic Amiga keyboards) |
 
 Key repeat uses OS/Intuition repeated `IDCMP_RAWKEY` messages (no INTUITICKS

@@ -13,7 +13,8 @@ These ideas are intended to preserve the component's modular design: application
 `RLV_ControlActivationPolicy`, `RLV_CurrentRowVisual`, and
 `rlv_render_cell_control` in `rich_listview.h`, plus the demo keys `A` / `V`
 and CLI `KEEPCURRENT` / `MARKER` / `NOVISUAL`. Broader wishlist ideas below
-(expanded rows, alternate focus glyphs, etc.) remain future work.
+(alternate focus glyphs, etc.) remain future work. Expandable rows are
+implemented — see section 2.
 
 ### Motivation
 
@@ -66,6 +67,17 @@ Fallback to a larger redraw when:
 ---
 
 ## 2. Collapsible and Expandable Rows
+
+**Status (RichListview):** First implementation complete (explicit per-row
+disclosure, multiple expanded rows allowed). See
+`docs/RICHLISTVIEW_EXPANDABLE_ROWS_IMPLEMENTATION_REPORT.md`,
+`RLV_ROW_EXPANDABLE` / `RLV_ROW_EXPANDED`, `RLV_COL_TYPE_DISCLOSURE`,
+`rlv_expand_row` / `rlv_collapse_row` / `rlv_toggle_row` / `rlv_collapse_all`,
+and demo keys Right / Left / `C`. Compile-time gate:
+`RLV_ENABLE_EXPANDABLE_ROWS` (default 1; omits `rlv_expand.o` /
+`rlv_disclosure.o` when 0). Not implemented from this wishlist: single-row
+expansion policy, automatic current-row expansion, Expand All, ellipsis
+truncation markers, or detail-field presentation beyond first wrapped line.
 
 ### Motivation
 

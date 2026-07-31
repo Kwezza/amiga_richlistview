@@ -233,6 +233,9 @@ VOID rlv_destroy(RLV_Control *control)
     control->armed_type = 0;
     rlv_free_layout_cache(control);
     rlv_free_cell_snapshot(control);
+#if defined(RLV_ENABLE_EXPANDABLE_ROWS) && (RLV_ENABLE_EXPANDABLE_ROWS != 0)
+    rlv_free_row_expand(control);
+#endif
     rlv_platform_free(control);
 }
 
@@ -252,6 +255,12 @@ BOOL rlv_set_columns(RLV_Control *c,
         rlv_layout_invalidate(c);
         return FALSE;
     }
+#if defined(RLV_ENABLE_EXPANDABLE_ROWS) && (RLV_ENABLE_EXPANDABLE_ROWS != 0)
+    if (!rlv_refresh_row_expand(c)) {
+        rlv_layout_invalidate(c);
+        return FALSE;
+    }
+#endif
     rlv_layout_invalidate(c);
     return TRUE;
 }
@@ -272,6 +281,12 @@ BOOL rlv_set_rows(RLV_Control *c,
         rlv_layout_invalidate(c);
         return FALSE;
     }
+#if defined(RLV_ENABLE_EXPANDABLE_ROWS) && (RLV_ENABLE_EXPANDABLE_ROWS != 0)
+    if (!rlv_refresh_row_expand(c)) {
+        rlv_layout_invalidate(c);
+        return FALSE;
+    }
+#endif
     rlv_layout_invalidate(c);
     return TRUE;
 }
@@ -314,6 +329,48 @@ BOOL rlv_set_checkbox_value(RLV_Control *control,
     control->cell_snapshot[index].value = value;
     return TRUE;
 }
+
+#if !defined(RLV_ENABLE_EXPANDABLE_ROWS) || (RLV_ENABLE_EXPANDABLE_ROWS == 0)
+BOOL rlv_expand_row(RLV_Control *c, LONG row)
+{
+    (void)c;
+    (void)row;
+    return FALSE;
+}
+
+BOOL rlv_collapse_row(RLV_Control *c, LONG row)
+{
+    (void)c;
+    (void)row;
+    return FALSE;
+}
+
+BOOL rlv_toggle_row(RLV_Control *c, LONG row)
+{
+    (void)c;
+    (void)row;
+    return FALSE;
+}
+
+VOID rlv_collapse_all(RLV_Control *c)
+{
+    (void)c;
+}
+
+BOOL rlv_is_row_expandable(const RLV_Control *c, LONG row)
+{
+    (void)c;
+    (void)row;
+    return FALSE;
+}
+
+BOOL rlv_is_row_expanded(const RLV_Control *c, LONG row)
+{
+    (void)c;
+    (void)row;
+    return FALSE;
+}
+#endif /* !RLV_ENABLE_EXPANDABLE_ROWS */
 
 VOID rlv_set_cell_padding(RLV_Control *c, UWORD x, UWORD y)
 {

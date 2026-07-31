@@ -1,14 +1,16 @@
 /**
  * Hit-testing, selection, make-visible, and neutral input handling
  * (Phase 4 + Phase 5.5 keyboard NAV_* + C4/C5 checkbox arm/commit +
- * C7 Space / RLV_INPUT_TOGGLE + E2 generic CELL_CONTROL event).
+ * C7 Space / RLV_INPUT_TOGGLE + E2 generic CELL_CONTROL event +
+ * optional expandable-row disclosure / EXPAND_ROW / COLLAPSE_ROW).
  *
  * handle_input returns TRUE iff result->type != RLV_EVENT_NONE.
  * At most one RLV_EventType is filled per successful call (§D.11).
  * Selection and checkbox toggle never share one compound event:
  * SELECT_DOWN may emit SELECTION_CHANGED; SELECT_UP or TOGGLE may emit
- * CELL_CONTROL. NAV_ACTIVATE never toggles. Does not paint — the
- * application refreshes after events.
+ * CELL_CONTROL. NAV_ACTIVATE never toggles. Disclosure SELECT_UP and
+ * Left/Right expand/collapse also emit CELL_CONTROL only. Does not paint —
+ * the application refreshes after events.
  */
 
 #include "rich_listview/rlv_internal.h"
@@ -18,6 +20,11 @@
 #define RLV_CELL_ARM_MASK \
     ((UBYTE)(RLV_CELL_F_VISIBLE | RLV_CELL_F_ENABLED \
              | RLV_CELL_F_INTERACTIVE))
+
+#if defined(RLV_ENABLE_EXPANDABLE_ROWS) && (RLV_ENABLE_EXPANDABLE_ROWS != 0)
+/* Extra hit slack around the visible +/- box; clamped to the cell band. */
+#define RLV_DISC_HIT_PAD  1
+#endif
 
 static VOID rlv_clear_event(RLV_Event *result)
 {
@@ -129,6 +136,125 @@ static VOID rlv_arm_checkbox(RLV_Control *c, LONG row, UWORD column)
     c->armed_column = column;
     c->armed_type = (UBYTE)RLV_COL_TYPE_CHECKBOX;
 }
+
+#if defined(RLV_ENABLE_EXPANDABLE_ROWS) && (RLV_ENABLE_EXPANDABLE_ROWS != 0)
+static VOID rlv_arm_disclosure(RLV_Control *c, LONG row, UWORD column)
+{
+    if (c == 0) {
+        return;
+    }
+    c->control_armed = TRUE;
+    c->armed_row = row;
+    c->armed_column = column;
+    c->armed_type = (UBYTE)RLV_COL_TYPE_DISCLOSURE;
+}
+
+/*
+ * Hit an interactive disclosure control. Requires expandable row and
+ * snapshot VISIBLE|ENABLED|INTERACTIVE. Hit rectangle may be one pixel
+ * larger than the visible outline, clamped to the column text inset.
+ */
+static BOOL rlv_hit_interactive_disclosure(const RLV_Control *c,
+                                                WORD x,
+                                                WORD y,
+                                                LONG *out_row,
+                                                UWORD *out_col)
+{
+    LONG row;
+    UWORD col;
+    UWORD col_type;
+    ULONG index;
+    UBYTE flags;
+    struct Rectangle box;
+    WORD pad;
+    const RLV_PixelColumn *pcol;
+
+    if (c == 0 || c->columns == 0 || c->cell_snapshot == 0
+        || c->row_expand == 0 || c->col_geom == 0) {
+        return FALSE;
+    }
+
+    row = rlv_hit_test(c, x, y);
+    if (row < 0) {
+        return FALSE;
+    }
+    if (!rlv_is_row_expandable(c, row)) {
+        return FALSE;
+    }
+    if (!rlv_row_has_multi_line_wrap(c, row)) {
+        return FALSE;
+    }
+
+    for (col = 0; col < c->column_count; col++) {
+        col_type = (UWORD)(c->columns[col].flags & RLV_COL_TYPE_MASK);
+        if (col_type != (UWORD)RLV_COL_TYPE_DISCLOSURE) {
+            continue;
+        }
+
+        index = (ULONG)row * (ULONG)c->column_count + (ULONG)col;
+        if (index >= c->cell_snapshot_count) {
+            continue;
+        }
+
+        flags = c->cell_snapshot[index].flags;
+        if ((flags & RLV_CELL_ARM_MASK) != RLV_CELL_ARM_MASK) {
+            continue;
+        }
+
+        if (!rlv_disclosure_resolve_rect(c, row, col, &box)) {
+            continue;
+        }
+
+        pad = (WORD)RLV_DISC_HIT_PAD;
+        box.MinX = (WORD)(box.MinX - pad);
+        box.MinY = (WORD)(box.MinY - pad);
+        box.MaxX = (WORD)(box.MaxX + pad);
+        box.MaxY = (WORD)(box.MaxY + pad);
+
+        pcol = &c->col_geom[col];
+        if (box.MinX < pcol->text_left) {
+            box.MinX = pcol->text_left;
+        }
+        if (box.MaxX > pcol->text_right) {
+            box.MaxX = pcol->text_right;
+        }
+
+        if (!rlv_point_in_rect(x, y, &box)) {
+            continue;
+        }
+
+        if (out_row != 0) {
+            *out_row = row;
+        }
+        if (out_col != 0) {
+            *out_col = col;
+        }
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static BOOL rlv_commit_disclosure_toggle(RLV_Control *c, RLV_Event *result)
+{
+    BOOL expanded;
+    BOOL want;
+
+    if (c == 0 || !c->control_armed) {
+        return FALSE;
+    }
+    if (c->armed_type != (UBYTE)RLV_COL_TYPE_DISCLOSURE) {
+        return FALSE;
+    }
+    if (!rlv_is_row_expandable(c, c->armed_row)) {
+        return FALSE;
+    }
+
+    expanded = rlv_is_row_expanded(c, c->armed_row);
+    want = expanded ? FALSE : TRUE;
+    return rlv_set_row_expanded(c, c->armed_row, want,
+                                     RLV_EXPAND_SRC_MOUSE, result);
+}
+#endif /* RLV_ENABLE_EXPANDABLE_ROWS */
 
 /*
  * Fill a generic RLV_EVENT_CELL_CONTROL payload (centralised for all cell
@@ -641,6 +767,11 @@ BOOL rlv_handle_input(RLV_Control *c,
     UWORD cb_col;
     BOOL handled;
     BOOL cb_hit;
+#if defined(RLV_ENABLE_EXPANDABLE_ROWS) && (RLV_ENABLE_EXPANDABLE_ROWS != 0)
+    LONG disc_row;
+    UWORD disc_col;
+    BOOL disc_hit;
+#endif
     RLV_BENCH_DECLARE(bench_key_total);
 
     RLV_BENCH_BEGIN(RLV_BENCH_KEY_EVENT_TOTAL, bench_key_total);
@@ -651,7 +782,8 @@ BOOL rlv_handle_input(RLV_Control *c,
         return FALSE;
     }
 
-    if (event->type >= RLV_INPUT_NAV_NEXT && event->type <= RLV_INPUT_TOGGLE) {
+    if (event->type >= RLV_INPUT_NAV_NEXT
+        && event->type <= RLV_INPUT_COLLAPSE_ROW) {
         RLV_BENCH_COUNT(RLV_BENCH_COUNTER_KEYBOARD_EVENTS);
     }
 
@@ -670,15 +802,25 @@ BOOL rlv_handle_input(RLV_Control *c,
                  (int)c->viewport_bounds.MaxY);
 
         /*
-         * C5 / §D.11 verified-click selection vs checkbox:
-         *  - Default SELECT_ROW: checkbox hit on other selectable row →
-         *    arm + SELECTION_CHANGED when selection changes.
-         *  - KEEP_CURRENT: checkbox hit → arm only (no selection /
-         *    make_visible / SELECTION_CHANGED); commit still on SELECT_UP.
-         *  - Checkbox hit, already selected (or nonselectable) → arm only.
-         *  - Outside box → clear arm; existing row-selection path.
+         * Disclosure before checkbox before ordinary row selection.
+         * Disclosure arms only — never changes selection / scroll.
+         * Checkbox policy unchanged (SELECT_ROW / KEEP_CURRENT).
          * Toggle is SELECT_UP only (CELL_CONTROL); never merged here.
          */
+#if defined(RLV_ENABLE_EXPANDABLE_ROWS) && (RLV_ENABLE_EXPANDABLE_ROWS != 0)
+        disc_row = -1;
+        disc_col = 0;
+        disc_hit = rlv_hit_interactive_disclosure(c, event->x, event->y,
+                                                       &disc_row, &disc_col);
+        if (disc_hit) {
+            rlv_arm_disclosure(c, disc_row, disc_col);
+            RLV_LOGF("SELECT_DOWN disclosure arm row=%ld col=%u",
+                     (long)disc_row, (unsigned)disc_col);
+            RLV_BENCH_END(RLV_BENCH_KEY_EVENT_TOTAL, bench_key_total);
+            return FALSE;
+        }
+#endif
+
         cb_row = -1;
         cb_col = 0;
         cb_hit = rlv_hit_interactive_checkbox(c, event->x, event->y,
@@ -768,7 +910,7 @@ BOOL rlv_handle_input(RLV_Control *c,
 
     case RLV_INPUT_SELECT_UP:
         /*
-         * Commit only when release is still on the same armed checkbox →
+         * Commit only when release is still on the same armed control →
          * CELL_CONTROL only (never SELECTION_CHANGED). Otherwise cancel
          * arm with no event. Does not paint.
          */
@@ -776,6 +918,29 @@ BOOL rlv_handle_input(RLV_Control *c,
             RLV_BENCH_END(RLV_BENCH_KEY_EVENT_TOTAL, bench_key_total);
             return FALSE;
         }
+
+#if defined(RLV_ENABLE_EXPANDABLE_ROWS) && (RLV_ENABLE_EXPANDABLE_ROWS != 0)
+        if (c->armed_type == (UBYTE)RLV_COL_TYPE_DISCLOSURE) {
+            disc_row = -1;
+            disc_col = 0;
+            disc_hit = rlv_hit_interactive_disclosure(c, event->x, event->y,
+                                                           &disc_row,
+                                                           &disc_col);
+            if (disc_hit
+                && disc_row == c->armed_row
+                && disc_col == c->armed_column) {
+                handled = rlv_commit_disclosure_toggle(c, result);
+                rlv_clear_arm(c);
+                RLV_BENCH_END(RLV_BENCH_KEY_EVENT_TOTAL, bench_key_total);
+                return handled;
+            }
+            RLV_LOGF("SELECT_UP disclosure cancel arm row=%ld col=%u",
+                     (long)c->armed_row, (unsigned)c->armed_column);
+            rlv_clear_arm(c);
+            RLV_BENCH_END(RLV_BENCH_KEY_EVENT_TOTAL, bench_key_total);
+            return FALSE;
+        }
+#endif
 
         cb_row = -1;
         cb_col = 0;
@@ -966,6 +1131,55 @@ BOOL rlv_handle_input(RLV_Control *c,
                                              result);
         RLV_BENCH_END(RLV_BENCH_KEY_EVENT_TOTAL, bench_key_total);
         return handled;
+
+#if defined(RLV_ENABLE_EXPANDABLE_ROWS) && (RLV_ENABLE_EXPANDABLE_ROWS != 0)
+    case RLV_INPUT_EXPAND_ROW:
+    case RLV_INPUT_COLLAPSE_ROW:
+        /*
+         * Right expands / Left collapses the current row when applicable.
+         * No-ops leave no event. Never auto-expand on Up/Down.
+         */
+        if (!c->keyboard_enabled) {
+            RLV_BENCH_END(RLV_BENCH_KEY_EVENT_TOTAL, bench_key_total);
+            return FALSE;
+        }
+        rlv_clear_arm(c);
+        if (c->selected_row < 0
+            || (ULONG)c->selected_row >= c->row_count) {
+            RLV_BENCH_END(RLV_BENCH_KEY_EVENT_TOTAL, bench_key_total);
+            return FALSE;
+        }
+        if (!rlv_is_row_expandable(c, c->selected_row)) {
+            RLV_BENCH_END(RLV_BENCH_KEY_EVENT_TOTAL, bench_key_total);
+            return FALSE;
+        }
+        if (!rlv_row_has_multi_line_wrap(c, c->selected_row)) {
+            RLV_BENCH_END(RLV_BENCH_KEY_EVENT_TOTAL, bench_key_total);
+            return FALSE;
+        }
+        if (event->type == RLV_INPUT_EXPAND_ROW) {
+            if (rlv_is_row_expanded(c, c->selected_row)) {
+                RLV_BENCH_END(RLV_BENCH_KEY_EVENT_TOTAL, bench_key_total);
+                return FALSE;
+            }
+            handled = rlv_set_row_expanded(c, c->selected_row, TRUE,
+                                                RLV_EXPAND_SRC_KEY, result);
+        } else {
+            if (!rlv_is_row_expanded(c, c->selected_row)) {
+                RLV_BENCH_END(RLV_BENCH_KEY_EVENT_TOTAL, bench_key_total);
+                return FALSE;
+            }
+            handled = rlv_set_row_expanded(c, c->selected_row, FALSE,
+                                                RLV_EXPAND_SRC_KEY, result);
+        }
+        RLV_BENCH_END(RLV_BENCH_KEY_EVENT_TOTAL, bench_key_total);
+        return handled;
+#else
+    case RLV_INPUT_EXPAND_ROW:
+    case RLV_INPUT_COLLAPSE_ROW:
+        RLV_BENCH_END(RLV_BENCH_KEY_EVENT_TOTAL, bench_key_total);
+        return FALSE;
+#endif
 
     default:
         RLV_BENCH_END(RLV_BENCH_KEY_EVENT_TOTAL, bench_key_total);

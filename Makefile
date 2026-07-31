@@ -18,13 +18,23 @@ BIN_DIR := bin
 # 0 = always full-viewport scroll paint.
 RLV_ENABLE_SMART_SCROLL ?= 1
 
+# Optional expandable / collapsible rows (+/- disclosure column).
+# 0 = omit rlv_expand.o / rlv_disclosure.o; API stubs return FALSE.
+RLV_ENABLE_EXPANDABLE_ROWS ?= 1
+
 # Optional crash-safe PROGDIR logger for rich-listview-demo-log only.
 RLV_ENABLE_LOGGING ?= 0
 
-RLV_CFLAGS = $(CFLAGS) -DRLV_ENABLE_SMART_SCROLL=$(RLV_ENABLE_SMART_SCROLL)
-RLV_LOG_CFLAGS = $(CFLAGS) -DRLV_ENABLE_LOGGING -DRLV_ENABLE_SMART_SCROLL=$(RLV_ENABLE_SMART_SCROLL)
-RLV_BENCH_CFLAGS = $(CFLAGS) -DRLV_ENABLE_BENCHMARKS -DRLV_ENABLE_SMART_SCROLL=$(RLV_ENABLE_SMART_SCROLL)
-RLV_NOSMART_CFLAGS = $(CFLAGS) -DRLV_ENABLE_SMART_SCROLL=0
+RLV_CFLAGS = $(CFLAGS) -DRLV_ENABLE_SMART_SCROLL=$(RLV_ENABLE_SMART_SCROLL) \
+	-DRLV_ENABLE_EXPANDABLE_ROWS=$(RLV_ENABLE_EXPANDABLE_ROWS)
+RLV_LOG_CFLAGS = $(CFLAGS) -DRLV_ENABLE_LOGGING \
+	-DRLV_ENABLE_SMART_SCROLL=$(RLV_ENABLE_SMART_SCROLL) \
+	-DRLV_ENABLE_EXPANDABLE_ROWS=$(RLV_ENABLE_EXPANDABLE_ROWS)
+RLV_BENCH_CFLAGS = $(CFLAGS) -DRLV_ENABLE_BENCHMARKS \
+	-DRLV_ENABLE_SMART_SCROLL=$(RLV_ENABLE_SMART_SCROLL) \
+	-DRLV_ENABLE_EXPANDABLE_ROWS=$(RLV_ENABLE_EXPANDABLE_ROWS)
+RLV_NOSMART_CFLAGS = $(CFLAGS) -DRLV_ENABLE_SMART_SCROLL=0 \
+	-DRLV_ENABLE_EXPANDABLE_ROWS=$(RLV_ENABLE_EXPANDABLE_ROWS)
 
 RLV_LOG_DIR = $(BUILD_DIR)/rich_listview_log
 RLV_BENCH_DIR = $(BUILD_DIR)/rich_listview_bench
@@ -46,6 +56,12 @@ RLV_OBJS = \
 	$(BUILD_DIR)/rich_listview/rlv_scroll.o \
 	$(BUILD_DIR)/rich_listview/backends/rlv_backend_amiga_v36.o
 
+ifeq ($(RLV_ENABLE_EXPANDABLE_ROWS),1)
+RLV_OBJS += \
+	$(BUILD_DIR)/rich_listview/rlv_expand.o \
+	$(BUILD_DIR)/rich_listview/rlv_disclosure.o
+endif
+
 RLV_LIBS = \
 	$(RLV_PLATFORM_OBJS) \
 	$(RLV_OBJS)
@@ -60,6 +76,12 @@ RLV_LOG_OBJS = \
 	$(RLV_LOG_DIR)/rlv_scroll.o \
 	$(RLV_LOG_DIR)/backends/rlv_backend_amiga_v36.o \
 	$(RLV_LOG_DIR)/rlv_log.o
+
+ifeq ($(RLV_ENABLE_EXPANDABLE_ROWS),1)
+RLV_LOG_OBJS += \
+	$(RLV_LOG_DIR)/rlv_expand.o \
+	$(RLV_LOG_DIR)/rlv_disclosure.o
+endif
 
 RLV_LOG_LIBS = \
 	$(RLV_PLATFORM_OBJS) \
@@ -77,6 +99,12 @@ RLV_BENCH_OBJS = \
 	$(RLV_BENCH_DIR)/rlv_platform.o \
 	$(RLV_BENCH_DIR)/rlv_bench.o
 
+ifeq ($(RLV_ENABLE_EXPANDABLE_ROWS),1)
+RLV_BENCH_OBJS += \
+	$(RLV_BENCH_DIR)/rlv_expand.o \
+	$(RLV_BENCH_DIR)/rlv_disclosure.o
+endif
+
 RLV_BENCH_LIBS = \
 	$(RLV_BENCH_OBJS)
 
@@ -91,6 +119,12 @@ RLV_NOSMART_OBJS = \
 	$(RLV_NOSMART_DIR)/rlv_input.o \
 	$(RLV_NOSMART_DIR)/rlv_scroll.o \
 	$(RLV_NOSMART_DIR)/backends/rlv_backend_amiga_v36.o
+
+ifeq ($(RLV_ENABLE_EXPANDABLE_ROWS),1)
+RLV_NOSMART_OBJS += \
+	$(RLV_NOSMART_DIR)/rlv_expand.o \
+	$(RLV_NOSMART_DIR)/rlv_disclosure.o
+endif
 
 RLV_NOSMART_LIBS = \
 	$(RLV_NOSMART_PLATFORM_OBJS) \

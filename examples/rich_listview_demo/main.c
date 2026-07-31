@@ -25,8 +25,15 @@
  *     latest RLV_EVENT_CELL_CONTROL (GT_SetGadgetAttrs / GTTX_Text).
  *     Policy changes also update this status line.
  *
- * Required modules: rlv_*.o (incl. wrap + checkbox), rlv_backend_amiga_v36.o,
- *                   rlv_platform.o
+ *   - Optional expandable rows (RLV_ENABLE_EXPANDABLE_ROWS): narrow
+ *     disclosure column (+/-), RLV_ROW_EXPANDABLE / EXPANDED flags,
+ *     Right/Left expand/collapse, key C = Collapse All. Disclosure and
+ *     checkbox states remain independent. CELL_CONTROL reports
+ *     DISCLOSURE + EXPANDED/COLLAPSED; app syncs row flags then
+ *     rlv_render_from_row (shift-blit or tail paint when scroll unchanged).
+ *
+ * Required modules: rlv_*.o (incl. wrap + checkbox + expand/disclosure),
+ *                   rlv_backend_amiga_v36.o, rlv_platform.o
  * Deliberately excluded: clv_renderer_*.o, clv_selection.o, clv_pixel_wrap.o,
  *                        ASCII formatters, clv_cellctl_* (legacy GadTools path)
  *
@@ -63,7 +70,7 @@ long __stack = 80000L;
 #define GID_PADDING_Y     6
 #define GID_ROW_GAP       7
 #define GID_EVENT_STATUS  8
-#define NUM_COLS   5
+#define NUM_COLS   6
 #define DEMO_EVENT_TEXT_LEN 160
 #ifdef RLV_ENABLE_BENCHMARKS
 #define DEMO_MAX_ROWS 96
@@ -74,11 +81,12 @@ long __stack = 80000L;
 #define DEMO_MAX_ROWS 9
 #endif
 
-/* Classic Return / Space raw keys (not OS3.2-only names). */
+/* Classic Return / Space / A / V / C raw keys (not OS3.2-only names). */
 #define DEMO_RAWKEY_RETURN  0x44
 #define DEMO_RAWKEY_SPACE   0x40
 #define DEMO_RAWKEY_A       0x20
 #define DEMO_RAWKEY_V       0x34
+#define DEMO_RAWKEY_C       0x33
 
 /* Interior padding around the control + scroller strip. */
 #define DEMO_PAD              8
@@ -200,8 +208,10 @@ static VOID demo_run_benchmarks(RLV_Control *control,
 #endif
 
 static const RLV_Column g_columns[NUM_COLS] = {
-    /* Name wraps; Type truncates (NONE); Description wraps heavily.
+    /* Disclosure first; Name wraps; Type truncates; Description wraps;
      * On = experimental checkbox column (mouse + Space). */
+    { "",            2 * 8, RLV_CELL_ALIGN_CENTER, RLV_WRAP_NONE,
+      RLV_COL_TYPE_DISCLOSURE },
     { "Name",        10 * 8, RLV_CELL_ALIGN_LEFT,   RLV_WRAP_WORD_OR_CHAR, 0 },
     { "Type",         8 * 8, RLV_CELL_ALIGN_LEFT,   RLV_WRAP_NONE, 0 },
     { "Description", 18 * 8, RLV_CELL_ALIGN_LEFT,   RLV_WRAP_WORD_OR_CHAR, 0 },
@@ -211,15 +221,17 @@ static const RLV_Column g_columns[NUM_COLS] = {
 };
 
 static const char *g_row0[NUM_COLS] = {
-    "Alpha", "Tool", "A compact cleanup utility", "Ready", ""
+    "", "Alpha", "Tool", "A compact cleanup utility", "Ready", ""
 };
 static const char *g_row1[NUM_COLS] = {
+    "",
     "Beta Package With A Rather Long Name",
     "Library",
     "Shared runtime routines used by several Workbench tools",
     "Idle", ""
 };
 static const char *g_row2[NUM_COLS] = {
+    "",
     "Gamma",
     "Tool",
     "Long description text that wraps across two or three lines when the "
@@ -227,12 +239,13 @@ static const char *g_row2[NUM_COLS] = {
     "Busy", ""
 };
 static const char *g_row3[NUM_COLS] = {
-    "-- Category --", "Heading", "Non-selectable section title row", "-", ""
+    "", "-- Category --", "Heading", "Non-selectable section title row", "-", ""
 };
 static const char *g_row4[NUM_COLS] = {
-    "Delta", "Data", "Configuration presets", "Ready", ""
+    "", "Delta", "Data", "Configuration presets", "Ready", ""
 };
 static const char *g_row5[NUM_COLS] = {
+    "",
     "Epsilon",
     "Tool",
     "Another tool entry with enough descriptive prose to occupy four "
@@ -241,15 +254,17 @@ static const char *g_row5[NUM_COLS] = {
     "Done", ""
 };
 static const char *g_row6[NUM_COLS] = {
-    "Zeta", "Library", "Support module", "Ready", ""
+    "", "Zeta", "Library", "Support module", "Ready", ""
 };
 static const char *g_row7[NUM_COLS] = {
+    "",
     "Eta Path/Example:Deep_Folder-Name",
     "PathTest",
     "PATH wrap is not enabled here; this Name column uses WORD_OR_CHAR",
     "Test", ""
 };
 static const char *g_row8[NUM_COLS] = {
+    "",
     "Theta",
     "VeryLongUnbrokenTypeToken",
     "Short",
@@ -258,11 +273,14 @@ static const char *g_row8[NUM_COLS] = {
 
 /*
  * App-owned authoritative checkbox store (column DEMO_CB_COL = On).
+ * Disclosure interactivity lives in the same control_cells row vectors.
  * set_rows borrows these descriptors and copies into the control snapshot;
  * the control never writes back. On CELL_CONTROL the demo syncs the store
- * via row user_data (pointer to the On-cell value UBYTE), then repaints.
+ * via row user_data (pointer to the On-cell value UBYTE) for checkboxes,
+ * or RLV_Row.flags for disclosure expand/collapse.
  */
-#define DEMO_CB_COL  4
+#define DEMO_DISC_COL  0
+#define DEMO_CB_COL    5
 #define DEMO_CB_ON \
     (UBYTE)(RLV_CELL_F_VISIBLE | RLV_CELL_F_ENABLED \
             | RLV_CELL_F_INTERACTIVE)
@@ -270,43 +288,46 @@ static const char *g_row8[NUM_COLS] = {
     (UBYTE)(RLV_CELL_F_VISIBLE | RLV_CELL_F_ENABLED)
 #define DEMO_CB_DISABLED \
     (UBYTE)(RLV_CELL_F_VISIBLE)
+#define DEMO_DISC_ON \
+    (UBYTE)(RLV_CELL_F_VISIBLE | RLV_CELL_F_ENABLED \
+            | RLV_CELL_F_INTERACTIVE)
 
 /* Initial templates (copied into the mutable store at demo_init_rows). */
 static const RLV_Cell g_ctrl_init0[NUM_COLS] = {
-    { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 },
+    { DEMO_DISC_ON, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 },
     { DEMO_CB_ON, RLV_CELL_CHECKED }
 };
 static const RLV_Cell g_ctrl_init1[NUM_COLS] = {
-    { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 },
+    { DEMO_DISC_ON, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 },
     { DEMO_CB_ON, RLV_CELL_UNCHECKED }
 };
 static const RLV_Cell g_ctrl_init2[NUM_COLS] = {
-    { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 },
+    { DEMO_DISC_ON, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 },
     { DEMO_CB_ON, RLV_CELL_CHECKED }
 };
 static const RLV_Cell g_ctrl_init3[NUM_COLS] = {
-    { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 },
-    { 0, 0 } /* heading: no visible checkbox */
+    { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 },
+    { 0, 0 } /* heading: no disclosure / checkbox */
 };
 static const RLV_Cell g_ctrl_init4[NUM_COLS] = {
-    { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 },
-    { DEMO_CB_DISPLAY, RLV_CELL_CHECKED } /* display-only */
+    { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 },
+    { DEMO_CB_DISPLAY, RLV_CELL_CHECKED } /* non-expandable; display-only cb */
 };
 static const RLV_Cell g_ctrl_init5[NUM_COLS] = {
-    { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 },
+    { DEMO_DISC_ON, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 },
     { DEMO_CB_ON, RLV_CELL_UNCHECKED }
 };
 static const RLV_Cell g_ctrl_init6[NUM_COLS] = {
-    { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 },
-    { DEMO_CB_DISABLED, RLV_CELL_CHECKED } /* ghosted */
+    { DEMO_DISC_ON, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 },
+    { DEMO_CB_DISABLED, RLV_CELL_CHECKED } /* ghosted checkbox */
 };
 static const RLV_Cell g_ctrl_init7[NUM_COLS] = {
-    { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 },
+    { DEMO_DISC_ON, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 },
     { DEMO_CB_ON, RLV_CELL_CHECKED }
 };
 static const RLV_Cell g_ctrl_init8[NUM_COLS] = {
-    { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 },
-    { DEMO_CB_ON, RLV_CELL_UNCHECKED }
+    { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 }, { 0, 0 },
+    { DEMO_CB_ON, RLV_CELL_UNCHECKED } /* non-expandable */
 };
 
 static RLV_Cell g_demo_ctrl_store[DEMO_MAX_ROWS][NUM_COLS];
@@ -382,13 +403,16 @@ static VOID demo_init_rows(void)
                     "layout, viewport motion, and selection redraws can be "
                     "measured repeatedly on a larger dataset.",
                     (unsigned)i);
-            row_name_buf[i][0] = name_buf[i];
-            row_name_buf[i][1] = type_buf[i];
-            row_name_buf[i][2] = desc_buf[i];
-            row_name_buf[i][3] = status_buf[i];
-            row_name_buf[i][4] = "";
+            row_name_buf[i][0] = "";
+            row_name_buf[i][1] = name_buf[i];
+            row_name_buf[i][2] = type_buf[i];
+            row_name_buf[i][3] = desc_buf[i];
+            row_name_buf[i][4] = status_buf[i];
+            row_name_buf[i][5] = "";
             cells[i] = row_name_buf[i];
 
+            g_demo_ctrl_store[i][DEMO_DISC_COL].flags = DEMO_DISC_ON;
+            g_demo_ctrl_store[i][DEMO_DISC_COL].value = 0;
             g_demo_ctrl_store[i][DEMO_CB_COL].flags = DEMO_CB_ON;
             g_demo_ctrl_store[i][DEMO_CB_COL].value = (UBYTE)((i & 1U)
                 ? RLV_CELL_CHECKED
@@ -414,6 +438,37 @@ static VOID demo_init_rows(void)
     if (g_demo_row_count > 3) {
         g_rows[3].flags = RLV_ROW_NONSELECTABLE;
     }
+    /* Expandable rows: mixed collapsed / expanded; Delta/Theta stay plain. */
+    if (g_demo_row_count > 0) {
+        g_rows[0].flags = (UWORD)(g_rows[0].flags | RLV_ROW_EXPANDABLE);
+    }
+    if (g_demo_row_count > 1) {
+        g_rows[1].flags = (UWORD)(g_rows[1].flags
+                                  | RLV_ROW_EXPANDABLE
+                                  | RLV_ROW_EXPANDED);
+    }
+    if (g_demo_row_count > 2) {
+        g_rows[2].flags = (UWORD)(g_rows[2].flags | RLV_ROW_EXPANDABLE);
+    }
+    if (g_demo_row_count > 5) {
+        g_rows[5].flags = (UWORD)(g_rows[5].flags
+                                  | RLV_ROW_EXPANDABLE
+                                  | RLV_ROW_EXPANDED);
+    }
+    if (g_demo_row_count > 6) {
+        g_rows[6].flags = (UWORD)(g_rows[6].flags | RLV_ROW_EXPANDABLE);
+    }
+    if (g_demo_row_count > 7) {
+        g_rows[7].flags = (UWORD)(g_rows[7].flags | RLV_ROW_EXPANDABLE);
+    }
+#ifdef RLV_ENABLE_BENCHMARKS
+    for (i = 9; i < g_demo_row_count && i < DEMO_MAX_ROWS; i++) {
+        g_rows[i].flags = (UWORD)(g_rows[i].flags | RLV_ROW_EXPANDABLE);
+        if ((i & 3U) == 0) {
+            g_rows[i].flags = (UWORD)(g_rows[i].flags | RLV_ROW_EXPANDED);
+        }
+    }
+#endif
 }
 
 /*
@@ -475,6 +530,9 @@ static CONST_STRPTR demo_control_type_name(UWORD type)
     if (type == (UWORD)RLV_COL_TYPE_CHECKBOX) {
         return "CHECKBOX";
     }
+    if (type == (UWORD)RLV_COL_TYPE_DISCLOSURE) {
+        return "DISCLOSURE";
+    }
     return "UNKNOWN";
 }
 
@@ -485,6 +543,12 @@ static CONST_STRPTR demo_control_action_name(UWORD action)
     }
     if (action == (UWORD)RLV_ACTION_PRESSED) {
         return "PRESSED";
+    }
+    if (action == (UWORD)RLV_ACTION_EXPANDED) {
+        return "EXPANDED";
+    }
+    if (action == (UWORD)RLV_ACTION_COLLAPSED) {
+        return "COLLAPSED";
     }
     return "NONE";
 }
@@ -610,8 +674,8 @@ static VOID demo_update_event_status(struct Window *win, const RLV_Event *ev)
     col_name = "-";
     if (ev->row >= 0 && (UWORD)ev->row < g_demo_row_count
         && g_rows[ev->row].cells != 0
-        && g_rows[ev->row].cells[0] != 0) {
-        row_name = g_rows[ev->row].cells[0];
+        && g_rows[ev->row].cells[1] != 0) {
+        row_name = g_rows[ev->row].cells[1];
     }
     if (ev->column < (UWORD)NUM_COLS && g_columns[ev->column].title != 0) {
         col_name = g_columns[ev->column].title;
@@ -1343,6 +1407,7 @@ static BOOL demo_point_in_control(const DemoGeom *geom, WORD x, WORD y)
  * Demo-local RAWKEY → RLV_InputEvent. Ignores upstrokes. Control wins over
  * Shift when both are held with a cursor key. Space → RLV_INPUT_TOGGLE
  * (sole eligible checkbox on selected row; core decides eligibility).
+ * Right/Left → expand/collapse current expandable row.
  */
 static BOOL demo_translate_rawkey(UWORD code, UWORD qual, RLV_InputEvent *out)
 {
@@ -1364,6 +1429,14 @@ static BOOL demo_translate_rawkey(UWORD code, UWORD qual, RLV_InputEvent *out)
     }
     if (key == DEMO_RAWKEY_SPACE) {
         out->type = (UWORD)RLV_INPUT_TOGGLE;
+        return TRUE;
+    }
+    if (key == CURSORRIGHT) {
+        out->type = (UWORD)RLV_INPUT_EXPAND_ROW;
+        return TRUE;
+    }
+    if (key == CURSORLEFT) {
+        out->type = (UWORD)RLV_INPUT_COLLAPSE_ROW;
         return TRUE;
     }
     if (key == CURSORUP || key == CURSORDOWN) {
@@ -1688,8 +1761,29 @@ static BOOL demo_apply_input(RLV_Control *control,
                (unsigned)ev.cell_value);
         fflush(stdout);
         demo_update_event_status(win, &ev);
+
+        if (ev.control_type == (UWORD)RLV_COL_TYPE_DISCLOSURE) {
+            /*
+             * Sync app-owned RLV_ROW_EXPANDED from the event. Layout and
+             * scroll already updated inside handle_input. Prefer a tail
+             * paint from the toggled row when scroll is unchanged.
+             */
+            if (ev.row >= 0 && (UWORD)ev.row < g_demo_row_count) {
+                if (ev.cell_value == (UBYTE)RLV_CELL_EXPANDED) {
+                    g_rows[ev.row].flags = (UWORD)(g_rows[ev.row].flags
+                                                   | RLV_ROW_EXPANDED);
+                } else {
+                    g_rows[ev.row].flags = (UWORD)(g_rows[ev.row].flags
+                                                   & (UWORD)~RLV_ROW_EXPANDED);
+                }
+            }
+            rlv_render_from_row(control, ev.row, scroll_before);
+            demo_sync_scroller(win, scroller, control, last_top);
+            return TRUE;
+        }
+
         /*
-         * Integrator pattern on CELL_CONTROL:
+         * Integrator pattern on checkbox CELL_CONTROL:
          *   1) Sync the app-owned authoritative Boolean via row_user_data
          *      (control already mutated its internal snapshot only).
          *   2) Prefer rlv_render_cell_control; escalate only when that
@@ -2025,15 +2119,18 @@ int main(int argc, char **argv)
     border_left = (WORD)(screen->WBorLeft);
     border_right = (WORD)(screen->WBorRight + 11); /* size gadget */
 
-    /* Scale column widths from actual font, not hard-coded Topaz. */
+    /* Scale column widths from actual font, not hard-coded Topaz.
+     * Indices match g_columns: disclosure, Name, Type, Description,
+     * Status, On. Disclosure stays a narrow fixed glyph column. */
     for (i = 0; i < NUM_COLS; i++) {
         columns[i] = g_columns[i];
     }
-    columns[0].width_pixels = (WORD)(10 * font_w);
-    columns[1].width_pixels = (WORD)(8 * font_w);
-    columns[2].width_pixels = (WORD)(18 * font_w);
-    columns[3].width_pixels = (WORD)(6 * font_w);
-    columns[4].width_pixels = (WORD)(3 * font_w);
+    columns[0].width_pixels = (WORD)(2 * font_w);   /* disclosure +/- */
+    columns[1].width_pixels = (WORD)(10 * font_w);  /* Name */
+    columns[2].width_pixels = (WORD)(8 * font_w);   /* Type */
+    columns[3].width_pixels = (WORD)(18 * font_w);  /* Description */
+    columns[4].width_pixels = (WORD)(6 * font_w);   /* Status */
+    columns[5].width_pixels = (WORD)(3 * font_w);   /* On checkbox */
 
     /*
      * Fixed pixel column widths: window may not shrink below
@@ -2307,10 +2404,11 @@ int main(int argc, char **argv)
 
     printf("Phase 5.5 custom control: keyboard nav + resize + scroll sync.\n");
     printf("Cursor Up/Down = prev/next; Shift+cursor = page; Ctrl+cursor = first/last.\n");
+    printf("Right/Left = expand/collapse current expandable row; C = Collapse All.\n");
     printf("Return activates selection; Space toggles sole checkbox. Click control for focus.\n");
     printf("A = toggle activation policy (SELECT_ROW / KEEP_CURRENT).\n");
     printf("V = cycle current-row visual (FULL / MARKER / NONE).\n");
-    printf("Row 3 (-- Category --) is non-selectable.\n");
+    printf("Row 3 (-- Category --) is non-selectable; Delta/Theta have empty disclosure cells.\n");
     printf("Activation=%s  Visual=%s\n",
            demo_activation_policy_name(g_demo_activation_policy),
            demo_current_row_visual_name(g_demo_current_row_visual));
@@ -2445,6 +2543,21 @@ int main(int argc, char **argv)
                            && active_control != 0
                            && key == DEMO_RAWKEY_V) {
                     demo_cycle_current_row_visual(win, active_control);
+                } else if ((code & IECODE_UP_PREFIX) == 0
+                           && active_control != 0
+                           && key == DEMO_RAWKEY_C) {
+                    UWORD ri;
+
+                    rlv_collapse_all(active_control);
+                    for (ri = 0; ri < g_demo_row_count; ri++) {
+                        g_rows[ri].flags = (UWORD)(g_rows[ri].flags
+                                                   & (UWORD)~RLV_ROW_EXPANDED);
+                    }
+                    demo_update_status_text(win, "Collapse All");
+                    demo_paint_viewport(active_control);
+                    demo_sync_scroller(win, scroller, active_control,
+                                      &last_scroll_top);
+                    RLV_LOG("COLLAPSE_ALL via key C");
                 } else if (active_control != 0
                            && rlv_get_keyboard_enabled(active_control)
                            && demo_translate_rawkey(code, qual, &inev)) {

@@ -125,12 +125,41 @@ struct RLV_Control
     /* Appended policies (keep at end — safer for incremental rebuilds). */
     UWORD control_activation_policy; /* RLV_ControlActivationPolicy */
     UWORD current_row_visual;        /* RLV_CurrentRowVisual */
+
+#if defined(RLV_ENABLE_EXPANDABLE_ROWS) && (RLV_ENABLE_EXPANDABLE_ROWS != 0)
+    /*
+     * Owned per-row expand snapshot (length == row_count). Copied from
+     * RLV_Row.flags on set_rows; mutated by expand APIs / disclosure input.
+     * Does not write through borrowed RLV_Row memory.
+     */
+    UBYTE *row_expand;
+    ULONG row_expand_count;
+    /*
+     * One-shot hint for rlv_render_from_row blit: total_height before the
+     * last expand/collapse reheight. 0 = none / consumed.
+     */
+    LONG expand_old_total_h;
+#endif
 };
+
+/* Internal expand-state bits in row_expand[]. */
+#define RLV_ROWEXP_EXPANDABLE  0x01U
+#define RLV_ROWEXP_EXPANDED    0x02U
+
+/* Source flags for rlv_set_row_expanded (may be combined). */
+#define RLV_EXPAND_SRC_API     0x0001UL /* programmatic; no CELL_CONTROL */
+#define RLV_EXPAND_SRC_MOUSE   0x0002UL /* emit CELL_CONTROL when changed */
+#define RLV_EXPAND_SRC_KEY     0x0004UL /* emit CELL_CONTROL when changed */
+#define RLV_EXPAND_SRC_BULK    0x0008UL /* defer reheight/scroll/anchor */
 
 /* layout — TRUE when layout_valid caches are ready for paint/hit-test. */
 BOOL rlv_layout_rebuild(RLV_Control *c);
 VOID rlv_layout_invalidate(RLV_Control *c);
 VOID rlv_layout_free_wraps(RLV_Control *c);
+#if defined(RLV_ENABLE_EXPANDABLE_ROWS) && (RLV_ENABLE_EXPANDABLE_ROWS != 0)
+/* Recompute row heights / top_y from from_row onward; keep wrap cache. */
+BOOL rlv_layout_reheight_from(RLV_Control *c, ULONG from_row);
+#endif
 
 /* wrap prepare (Phase 3) */
 BOOL rlv_wrap_prepare(RLV_Control *c);
@@ -176,6 +205,39 @@ VOID rlv_checkbox_paint(RLV_Control *c,
                              LONG logical_row,
                              UWORD column,
                              BOOL selected);
+
+#if defined(RLV_ENABLE_EXPANDABLE_ROWS) && (RLV_ENABLE_EXPANDABLE_ROWS != 0)
+BOOL rlv_disclosure_resolve_rect(const RLV_Control *c,
+                                      LONG logical_row,
+                                      UWORD column,
+                                      struct Rectangle *out_box);
+VOID rlv_disclosure_paint(RLV_Control *c,
+                               LONG logical_row,
+                               UWORD column,
+                               BOOL selected);
+
+/*
+ * Central expand-state transition. Validates expandable; no-op same-state
+ * returns TRUE. With SRC_BULK, only mutates row_expand[]. Otherwise rebuilds
+ * heights from the row, anchors viewport, and may fill CELL_CONTROL when
+ * SRC_MOUSE or SRC_KEY and state actually changed.
+ */
+BOOL rlv_set_row_expanded(RLV_Control *c,
+                               LONG row,
+                               BOOL expanded,
+                               ULONG source_flags,
+                               RLV_Event *result);
+
+BOOL rlv_row_is_collapsed_compact(const RLV_Control *c, LONG logical_row);
+/*
+ * TRUE when the wrap cache has more than one display line in any cell.
+ * Disclosure +/- is suppressed when FALSE so single-line expandable rows
+ * do not show a no-op control (resize may later produce multi-line wrap).
+ */
+BOOL rlv_row_has_multi_line_wrap(const RLV_Control *c, LONG logical_row);
+VOID rlv_free_row_expand(RLV_Control *c);
+BOOL rlv_refresh_row_expand(RLV_Control *c);
+#endif
 
 /* TRUE when the logical row should use full selected fill/text pens. */
 BOOL rlv_row_uses_selected_fill(const RLV_Control *c, LONG logical_row);
