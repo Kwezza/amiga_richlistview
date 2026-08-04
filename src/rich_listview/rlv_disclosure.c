@@ -216,10 +216,12 @@ VOID rlv_disclosure_paint(RLV_Control *c,
     }
 
     expandable = rlv_is_row_expandable(c, logical_row);
-    if (!expandable || !rlv_row_has_multi_line_wrap(c, logical_row)) {
+    if (!rlv_disclosure_ui_enabled(c)
+        || !expandable
+        || !rlv_row_has_multi_line_wrap(c, logical_row)) {
         /* Reserved empty disclosure cell — background only (row fill).
-         * Single-line wrap suppresses +/- even when the row is marked
-         * expandable (otherwise expand would be a visual no-op). */
+         * Non-collapsible display modes and single-line wrap suppress +/-.
+         */
         return;
     }
 

@@ -40,21 +40,51 @@ int main(void)
         UWORD policy;
         UWORD visual;
         UWORD repaint;
+        UWORD rowdisp;
+        UWORD longword;
+        UWORD ellip;
 
         policy = (UWORD)RLV_CONTROL_ACTIVATE_SELECT_ROW;
         visual = (UWORD)RLV_CURRENT_ROW_VISUAL_FULL;
         repaint = (UWORD)RLV_CELL_REPAINT_OK;
-        if (policy != 0 || visual != 0 || repaint != 0) {
+        rowdisp = (UWORD)RLV_ROWS_COLLAPSIBLE;
+        longword = (UWORD)RLV_LONG_WORD_CLIP;
+        ellip = (UWORD)RLV_ELLIPSIS_NONE;
+        if (policy != 0 || visual != 0 || repaint != 0
+            || rowdisp != 0 || longword != 0 || ellip != 0) {
             return 1;
         }
         policy = (UWORD)RLV_CONTROL_ACTIVATE_KEEP_CURRENT;
         visual = (UWORD)RLV_CURRENT_ROW_VISUAL_MARKER;
-        if (policy == 0 || visual == 0) {
+        rowdisp = (UWORD)RLV_ROWS_ALWAYS_EXPANDED;
+        longword = (UWORD)RLV_LONG_WORD_WRAP;
+        ellip = (UWORD)(RLV_ELLIPSIS_COLLAPSED_CONTENT
+                        | RLV_ELLIPSIS_HORIZONTAL_CLIP);
+        if (policy == 0 || visual == 0 || rowdisp == 0
+            || longword == 0 || ellip == 0) {
             return 1;
         }
         visual = (UWORD)RLV_CURRENT_ROW_VISUAL_NONE;
-        if (visual == 0) {
+        rowdisp = (UWORD)RLV_ROWS_SINGLE_LINE;
+        if (visual == 0 || rowdisp == 0) {
             return 1;
+        }
+        {
+            UWORD initexp;
+            RLV_Config cfg2;
+
+            initexp = (UWORD)RLV_INITIAL_EXPAND_ALL_OPEN;
+            if (initexp != 0) {
+                return 1;
+            }
+            initexp = (UWORD)RLV_INITIAL_EXPAND_ALL_COLLAPSED;
+            if (initexp == 0) {
+                return 1;
+            }
+            memset(&cfg2, 0, sizeof(cfg2));
+            if (cfg2.initial_expand != 0) {
+                return 1;
+            }
         }
     }
 

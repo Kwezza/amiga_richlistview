@@ -470,6 +470,192 @@ static VOID rlv_draw_frag(RLV_Control *c,
                    frag->text, frag->length);
 }
 
+static UWORD rlv_trim_trailing_spaces(CONST_STRPTR text, UWORD length)
+{
+    if (text == 0) {
+        return 0;
+    }
+    while (length > 0
+           && (text[length - 1] == ' ' || text[length - 1] == '\t')) {
+        length--;
+    }
+    return length;
+}
+
+/*
+ * Three compact dots via 1x1 fills at x, x+2, x+4 (not Text("...")).
+ * Clipped to cell_right; draws nothing if the marker cannot fit.
+ */
+static VOID rlv_draw_ellipsis_dots(RLV_Control *c,
+                                        WORD x,
+                                        WORD dot_y,
+                                        WORD cell_right,
+                                        UWORD text_pen,
+                                        UWORD back_pen)
+{
+    const RLV_DrawOps *ops;
+    APTR ctx;
+    WORD i;
+    WORD px;
+
+    if (c == 0 || c->draw_ops == 0 || c->draw_ops->fill_rect == 0) {
+        return;
+    }
+    if (x > cell_right) {
+        return;
+    }
+    if ((WORD)(x + (WORD)RLV_ELLIPSIS_WIDTH_PX - 1) > cell_right) {
+        return;
+    }
+
+    ops = c->draw_ops;
+    ctx = c->draw_context;
+    ops->set_pens(ctx, text_pen, back_pen);
+    for (i = 0; i < 3; i++) {
+        px = (WORD)(x + (WORD)(i * (WORD)RLV_ELLIPSIS_DOT_STEP));
+        if (px > cell_right) {
+            break;
+        }
+        ops->fill_rect(ctx, px, dot_y, px, dot_y);
+    }
+}
+
+/*
+ * Fit and paint one fragment, optionally reserving width for a trailing
+ * three-dot ellipsis. Never mutates the source string. Deterministic
+ * narrow-column degradation: text+marker, marker only, or neither.
+ */
+static VOID rlv_draw_frag_with_ellipsis(RLV_Control *c,
+                                             const RLV_Frag *frag,
+                                             WORD baseline_y,
+                                             WORD text_left,
+                                             WORD text_right,
+                                             BOOL want_ellipsis,
+                                             UWORD text_pen,
+                                             UWORD back_pen)
+{
+    const RLV_DrawOps *ops;
+    APTR ctx;
+    UWORD full_len;
+    UWORD draw_len;
+    UWORD w;
+    UWORD max_w;
+    WORD span;
+    WORD text_x;
+    WORD dots_x;
+    WORD dot_y;
+    WORD marker_need;
+    BOOL draw_text;
+    BOOL draw_dots;
+
+    if (c == 0 || c->draw_ops == 0 || frag == 0) {
+        return;
+    }
+    if (baseline_y < c->viewport_bounds.MinY
+        || baseline_y > c->viewport_bounds.MaxY) {
+        return;
+    }
+
+    ops = c->draw_ops;
+    ctx = c->draw_context;
+    full_len = frag->length;
+    if (frag->text == 0) {
+        full_len = 0;
+    }
+
+    if (!want_ellipsis) {
+        rlv_draw_frag(c, frag, baseline_y, text_pen, back_pen);
+        return;
+    }
+
+    span = (WORD)(text_right - text_left + 1);
+    if (span < 1) {
+        return;
+    }
+
+    marker_need = (UWORD)(RLV_ELLIPSIS_TEXT_GAP + RLV_ELLIPSIS_WIDTH_PX);
+    draw_text = FALSE;
+    draw_dots = FALSE;
+    draw_len = 0;
+    text_x = frag->relative_x;
+    dots_x = text_x;
+
+    if ((UWORD)span >= marker_need) {
+        max_w = (UWORD)((UWORD)span - marker_need);
+        draw_len = 0;
+        if (full_len > 0 && max_w > 0) {
+            if (ops->text_fit != 0) {
+                draw_len = ops->text_fit(ctx, frag->text, full_len, max_w);
+            } else {
+                /* Fall back: binary search via text_width if present. */
+                if (ops->text_width != 0) {
+                    UWORD lo;
+                    UWORD hi;
+                    UWORD mid;
+
+                    lo = 0;
+                    hi = full_len;
+                    while (lo < hi) {
+                        mid = (UWORD)((lo + hi + 1) / 2);
+                        if (ops->text_width(ctx, frag->text, mid) <= max_w) {
+                            lo = mid;
+                        } else {
+                            hi = (UWORD)(mid - 1);
+                        }
+                    }
+                    draw_len = lo;
+                }
+            }
+            draw_len = rlv_trim_trailing_spaces(frag->text, draw_len);
+        }
+
+        w = 0;
+        if (draw_len > 0 && ops->text_width != 0) {
+            w = ops->text_width(ctx, frag->text, draw_len);
+        }
+        text_x = frag->relative_x;
+        if (text_x < text_left) {
+            text_x = text_left;
+        }
+        if (draw_len > 0
+            && (WORD)(text_x + (WORD)w - 1) <= text_right) {
+            draw_text = TRUE;
+            dots_x = (WORD)(text_x + (WORD)w + (WORD)RLV_ELLIPSIS_TEXT_GAP);
+        } else {
+            /* Text does not fit with marker; try marker alone. */
+            dots_x = text_left;
+        }
+
+        if ((WORD)(dots_x + (WORD)RLV_ELLIPSIS_WIDTH_PX - 1) <= text_right) {
+            draw_dots = TRUE;
+        } else if (!draw_text
+                   && (UWORD)span >= (UWORD)RLV_ELLIPSIS_WIDTH_PX) {
+            dots_x = text_left;
+            if ((WORD)(dots_x + (WORD)RLV_ELLIPSIS_WIDTH_PX - 1)
+                <= text_right) {
+                draw_dots = TRUE;
+            }
+        }
+    } else if ((UWORD)span >= (UWORD)RLV_ELLIPSIS_WIDTH_PX) {
+        /* Only the marker fits. */
+        dots_x = text_left;
+        draw_dots = TRUE;
+    }
+
+    if (draw_text && draw_len > 0) {
+        RLV_BENCH_COUNT(RLV_BENCH_COUNTER_CELLS_DRAWN);
+        ops->set_pens(ctx, text_pen, back_pen);
+        ops->draw_text(ctx, text_x, baseline_y, frag->text, draw_len);
+    }
+
+    if (draw_dots) {
+        /* Align dots with the text baseline (same Y as Text()). */
+        dot_y = baseline_y;
+        rlv_draw_ellipsis_dots(c, dots_x, dot_y, text_right,
+                                    text_pen, back_pen);
+    }
+}
+
 /*
  * Paint one logical row's content (current-row presentation + fragments)
  * when its content rectangle intersects paint_area. Baseline rejection
@@ -502,6 +688,8 @@ static VOID rlv_paint_row_content(RLV_Control *c,
     WORD marker_w;
     WORD marker_right;
     struct Rectangle marker;
+    BOOL row_collapsed;
+    BOOL single_line_mode;
 
     if (c == 0 || paint_area == 0 || c->draw_ops == 0) {
         return;
@@ -547,6 +735,13 @@ static VOID rlv_paint_row_content(RLV_Control *c,
                                           cell_right, content.MaxY);
     }
 
+    row_collapsed = FALSE;
+    single_line_mode =
+        (c->row_display_mode == (UWORD)RLV_ROWS_SINGLE_LINE) ? TRUE : FALSE;
+#if defined(RLV_ENABLE_EXPANDABLE_ROWS) && (RLV_ENABLE_EXPANDABLE_ROWS != 0)
+    row_collapsed = rlv_row_is_collapsed_compact(c, (LONG)layout_index);
+#endif
+
     for (col = 0; col < c->column_count; col++) {
         /* Checkbox columns: snapshot + first-line-band geom (scroll-safe). */
         if (c->columns != 0
@@ -572,22 +767,57 @@ static VOID rlv_paint_row_content(RLV_Control *c,
         cell = &c->cell_wraps[idx];
         {
             UWORD paint_lines;
+            BOOL want_collapsed_ellipsis;
+            BOOL want_horiz_ellipsis;
+            BOOL line_wants_ellipsis;
 
             paint_lines = cell->frag_count;
+            if (single_line_mode && paint_lines > 1) {
+                paint_lines = 1;
+            }
 #if defined(RLV_ENABLE_EXPANDABLE_ROWS) && (RLV_ENABLE_EXPANDABLE_ROWS != 0)
             /* Collapsed compact: first prepared display line only. */
-            if (rlv_row_is_collapsed_compact(c, (LONG)layout_index)
-                && paint_lines > 1) {
+            if (row_collapsed && paint_lines > 1) {
                 paint_lines = 1;
             }
 #endif
+
+            want_collapsed_ellipsis = FALSE;
+            if ((c->ellipsis_flags & RLV_ELLIPSIS_COLLAPSED_CONTENT) != 0
+                && row_collapsed
+                && cell->frag_count > paint_lines
+                && paint_lines > 0) {
+                want_collapsed_ellipsis = TRUE;
+            }
+
+            want_horiz_ellipsis = FALSE;
+            if ((c->ellipsis_flags & RLV_ELLIPSIS_HORIZONTAL_CLIP) != 0
+                && (cell->flags & RLV_CELLWRAP_F_HORIZ_CLIPPED) != 0
+                && paint_lines > 0) {
+                want_horiz_ellipsis = TRUE;
+            }
+
             for (line = 0; line < paint_lines; line++) {
                 frag = &cell->frags[line];
                 baseline = (WORD)(row_top
                                   + (WORD)c->cell_padding_y
                                   + (WORD)(line * (UWORD)line_h)
                                   + (WORD)c->font_metrics.baseline);
-                rlv_draw_frag(c, frag, baseline, text_pen, text_back);
+                line_wants_ellipsis = FALSE;
+                if (line + 1 == paint_lines) {
+                    if (want_collapsed_ellipsis || want_horiz_ellipsis) {
+                        line_wants_ellipsis = TRUE;
+                    }
+                }
+                if (line_wants_ellipsis) {
+                    rlv_draw_frag_with_ellipsis(
+                        c, frag, baseline,
+                        c->col_geom[col].text_left,
+                        c->col_geom[col].text_right,
+                        TRUE, text_pen, text_back);
+                } else {
+                    rlv_draw_frag(c, frag, baseline, text_pen, text_back);
+                }
             }
         }
     }

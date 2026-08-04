@@ -57,11 +57,20 @@ typedef struct RLV_Frag
     WORD  relative_x;      /* absolute window X */
 } RLV_Frag;
 
+/* RLV_CellWrap.flags */
+#define RLV_CELLWRAP_F_HORIZ_CLIPPED  0x0001U /* undisplayed source remains */
+
 typedef struct RLV_CellWrap
 {
     RLV_Frag *frags; /* owned; length frag_count */
     UWORD frag_count;
+    UWORD flags;     /* RLV_CELLWRAP_F_* */
 } RLV_CellWrap;
+
+/* Compact three-dot ellipsis metrics (hand-drawn via fill_rect). */
+#define RLV_ELLIPSIS_DOT_STEP   2  /* pixel centres at 0, 2, 4 */
+#define RLV_ELLIPSIS_WIDTH_PX   5  /* inclusive span of three dots */
+#define RLV_ELLIPSIS_TEXT_GAP   2  /* gap between fitted text and dots */
 
 struct RLV_Control
 {
@@ -125,6 +134,11 @@ struct RLV_Control
     /* Appended policies (keep at end — safer for incremental rebuilds). */
     UWORD control_activation_policy; /* RLV_ControlActivationPolicy */
     UWORD current_row_visual;        /* RLV_CurrentRowVisual */
+    UWORD row_display_mode;          /* RLV_RowDisplayMode */
+    UWORD long_word_mode;            /* RLV_LongWordMode */
+    UWORD ellipsis_flags;            /* RLV_ELLIPSIS_* */
+    UWORD initial_expand;            /* RLV_InitialExpandMode */
+    BOOL  apply_initial_expand;      /* TRUE until first set_rows after create */
 
 #if defined(RLV_ENABLE_EXPANDABLE_ROWS) && (RLV_ENABLE_EXPANDABLE_ROWS != 0)
     /*
@@ -238,6 +252,13 @@ BOOL rlv_row_has_multi_line_wrap(const RLV_Control *c, LONG logical_row);
 VOID rlv_free_row_expand(RLV_Control *c);
 BOOL rlv_refresh_row_expand(RLV_Control *c);
 #endif
+
+/*
+ * TRUE when disclosure glyphs, hit targets, and expand/collapse input are
+ * active (COLLAPSIBLE row-display mode only). Expand snapshot bits remain
+ * owned while this returns FALSE.
+ */
+BOOL rlv_disclosure_ui_enabled(const RLV_Control *c);
 
 /* TRUE when the logical row should use full selected fill/text pens. */
 BOOL rlv_row_uses_selected_fill(const RLV_Control *c, LONG logical_row);

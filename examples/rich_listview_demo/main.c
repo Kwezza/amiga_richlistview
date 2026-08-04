@@ -24,9 +24,10 @@
  *   - Read-only TEXT_KIND status field under the ListView showing the
  *     latest RLV_EVENT_CELL_CONTROL (GT_SetGadgetAttrs / GTTX_Text).
  *     Policy changes also update this status line.
- *   - Settings menu selects pending divider / X pad / Y pad / row gap;
- *     Apply commits them transactionally (recreate + one full paint).
- *     Apply stays disabled while pending matches applied.
+ *   - Settings menu selects pending divider / X pad / Y pad / row gap /
+ *     row-display / long-word / ellipsis policies; Apply commits them
+ *     transactionally (recreate + one full paint). Apply stays disabled
+ *     while pending matches applied.
  *
  *   - Optional expandable rows (RLV_ENABLE_EXPANDABLE_ROWS): narrow
  *     disclosure column (+/-), RLV_ROW_EXPANDABLE / EXPANDED flags,
@@ -78,9 +79,17 @@ long __stack = 80000L;
 #define DEMO_MENU_CMD_YPAD     3
 #define DEMO_MENU_CMD_GAP      4
 #define DEMO_MENU_CMD_RESET    5
+#define DEMO_MENU_CMD_ROWDISP  6
+#define DEMO_MENU_CMD_LONGWORD 7
+#define DEMO_MENU_CMD_ELLIPSIS 8
+#define DEMO_MENU_CMD_INITEXP  9
 #define DEMO_MENU_ID(cmd, val) ((ULONG)(((ULONG)(cmd) << 8) | (ULONG)(val)))
 #define DEMO_MENU_CMD(id)      ((UWORD)(((ULONG)(id) >> 8) & 0xFFUL))
 #define DEMO_MENU_VAL(id)      ((UWORD)((ULONG)(id) & 0xFFUL))
+
+/* Ellipsis submenu value bits (toggle independently). */
+#define DEMO_ELLIP_VAL_COLLAPSED  1
+#define DEMO_ELLIP_VAL_HORIZONTAL 2
 #ifdef RLV_ENABLE_BENCHMARKS
 #define DEMO_MAX_ROWS 96
 #define RLV_BENCH_NAV_STEPS 50
@@ -115,8 +124,9 @@ static LONG g_demo_refresh_depth = 0;
 static BOOL g_demo_gadgets_detached = FALSE;
 
 /*
- * Authoritative visual-test settings. Defaults match the pre-menu demo:
- * dotted dividers, X pad 1, Y pad 2, row gap 1.
+ * Authoritative visual-test settings. Defaults match historical startup:
+ * dotted dividers, X pad 1, Y pad 2, row gap 1, collapsible rows,
+ * long-word clip, collapsed-content ellipsis on, expandable rows start open.
  */
 typedef struct DemoSettings
 {
@@ -124,6 +134,10 @@ typedef struct DemoSettings
     UWORD padding_x;
     UWORD padding_y;
     UWORD row_gap;
+    UWORD row_display_mode;
+    UWORD long_word_mode;
+    UWORD ellipsis_flags;
+    UWORD initial_expand;
 } DemoSettings;
 
 static DemoSettings g_demo_applied;
@@ -199,6 +213,30 @@ static struct NewMenu g_demo_newmenu[] =
     { NM_SUB,   "3", NULL, CHECKIT, ~8,  (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_GAP, 3) },
     { NM_SUB,   "4", NULL, CHECKIT, ~16, (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_GAP, 4) },
     { NM_ITEM,  NM_BARLABEL, NULL, 0, 0, NULL },
+    { NM_ITEM,  "Row display", NULL, 0, 0, NULL },
+    { NM_SUB,   "Collapsible", NULL, CHECKIT, ~1,
+      (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_ROWDISP, RLV_ROWS_COLLAPSIBLE) },
+    { NM_SUB,   "Always expanded", NULL, CHECKIT, ~2,
+      (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_ROWDISP, RLV_ROWS_ALWAYS_EXPANDED) },
+    { NM_SUB,   "Single line only", NULL, CHECKIT, ~4,
+      (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_ROWDISP, RLV_ROWS_SINGLE_LINE) },
+    { NM_ITEM,  "Start rows", NULL, 0, 0, NULL },
+    { NM_SUB,   "All open", NULL, CHECKIT, ~1,
+      (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_INITEXP, RLV_INITIAL_EXPAND_ALL_OPEN) },
+    { NM_SUB,   "All collapsed", NULL, CHECKIT, ~2,
+      (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_INITEXP,
+                         RLV_INITIAL_EXPAND_ALL_COLLAPSED) },
+    { NM_ITEM,  "Long words", NULL, 0, 0, NULL },
+    { NM_SUB,   "Preserve clipping", NULL, CHECKIT, ~1,
+      (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_LONGWORD, RLV_LONG_WORD_CLIP) },
+    { NM_SUB,   "Wrap by character", NULL, CHECKIT, ~2,
+      (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_LONGWORD, RLV_LONG_WORD_WRAP) },
+    { NM_ITEM,  "Ellipsis", NULL, 0, 0, NULL },
+    { NM_SUB,   "Hidden collapsed text", NULL, CHECKIT | MENUTOGGLE, 0,
+      (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_ELLIPSIS, DEMO_ELLIP_VAL_COLLAPSED) },
+    { NM_SUB,   "Horizontally clipped", NULL, CHECKIT | MENUTOGGLE, 0,
+      (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_ELLIPSIS, DEMO_ELLIP_VAL_HORIZONTAL) },
+    { NM_ITEM,  NM_BARLABEL, NULL, 0, 0, NULL },
     { NM_ITEM,  "Reset to defaults", NULL, 0, 0,
       (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_RESET, 0) },
     { NM_END,   NULL, NULL, 0, 0, NULL }
@@ -260,13 +298,13 @@ static VOID demo_run_benchmarks(RLV_Control *control,
 
 static const RLV_Column g_columns[NUM_COLS] = {
     /* Disclosure first; Name wraps; Type truncates; Description wraps;
-     * On = experimental checkbox column (mouse + Space). */
+     * Status uses WORD so Long-words policy is testable; On = checkbox. */
     { "",            2 * 8, RLV_CELL_ALIGN_CENTER, RLV_WRAP_NONE,
       RLV_COL_TYPE_DISCLOSURE },
     { "Name",        10 * 8, RLV_CELL_ALIGN_LEFT,   RLV_WRAP_WORD_OR_CHAR, 0 },
     { "Type",         8 * 8, RLV_CELL_ALIGN_LEFT,   RLV_WRAP_NONE, 0 },
     { "Description", 18 * 8, RLV_CELL_ALIGN_LEFT,   RLV_WRAP_WORD_OR_CHAR, 0 },
-    { "Status",       6 * 8, RLV_CELL_ALIGN_LEFT,   RLV_WRAP_NONE, 0 },
+    { "Status",       6 * 8, RLV_CELL_ALIGN_LEFT,   RLV_WRAP_WORD, 0 },
     { "On",           3 * 8, RLV_CELL_ALIGN_CENTER, RLV_WRAP_NONE,
       RLV_COL_TYPE_CHECKBOX }
 };
@@ -319,7 +357,7 @@ static const char *g_row8[NUM_COLS] = {
     "Theta",
     "VeryLongUnbrokenTypeToken",
     "Short",
-    "Trunc", ""
+    "Truncated", ""
 };
 
 /*
@@ -489,9 +527,12 @@ static VOID demo_init_rows(void)
     if (g_demo_row_count > 3) {
         g_rows[3].flags = RLV_ROW_NONSELECTABLE;
     }
-    /* Expandable rows: mixed collapsed / expanded; Delta/Theta stay plain. */
+    /* Expandable rows (Delta/heading/Theta stay plain). Startup open/collapsed
+     * follows RLV_Config.initial_expand (demo default: all open). */
     if (g_demo_row_count > 0) {
-        g_rows[0].flags = (UWORD)(g_rows[0].flags | RLV_ROW_EXPANDABLE);
+        g_rows[0].flags = (UWORD)(g_rows[0].flags
+                                  | RLV_ROW_EXPANDABLE
+                                  | RLV_ROW_EXPANDED);
     }
     if (g_demo_row_count > 1) {
         g_rows[1].flags = (UWORD)(g_rows[1].flags
@@ -499,7 +540,9 @@ static VOID demo_init_rows(void)
                                   | RLV_ROW_EXPANDED);
     }
     if (g_demo_row_count > 2) {
-        g_rows[2].flags = (UWORD)(g_rows[2].flags | RLV_ROW_EXPANDABLE);
+        g_rows[2].flags = (UWORD)(g_rows[2].flags
+                                  | RLV_ROW_EXPANDABLE
+                                  | RLV_ROW_EXPANDED);
     }
     if (g_demo_row_count > 5) {
         g_rows[5].flags = (UWORD)(g_rows[5].flags
@@ -507,17 +550,20 @@ static VOID demo_init_rows(void)
                                   | RLV_ROW_EXPANDED);
     }
     if (g_demo_row_count > 6) {
-        g_rows[6].flags = (UWORD)(g_rows[6].flags | RLV_ROW_EXPANDABLE);
+        g_rows[6].flags = (UWORD)(g_rows[6].flags
+                                  | RLV_ROW_EXPANDABLE
+                                  | RLV_ROW_EXPANDED);
     }
     if (g_demo_row_count > 7) {
-        g_rows[7].flags = (UWORD)(g_rows[7].flags | RLV_ROW_EXPANDABLE);
+        g_rows[7].flags = (UWORD)(g_rows[7].flags
+                                  | RLV_ROW_EXPANDABLE
+                                  | RLV_ROW_EXPANDED);
     }
 #ifdef RLV_ENABLE_BENCHMARKS
     for (i = 9; i < g_demo_row_count && i < DEMO_MAX_ROWS; i++) {
-        g_rows[i].flags = (UWORD)(g_rows[i].flags | RLV_ROW_EXPANDABLE);
-        if ((i & 3U) == 0) {
-            g_rows[i].flags = (UWORD)(g_rows[i].flags | RLV_ROW_EXPANDED);
-        }
+        g_rows[i].flags = (UWORD)(g_rows[i].flags
+                                  | RLV_ROW_EXPANDABLE
+                                  | RLV_ROW_EXPANDED);
     }
 #endif
 }
@@ -632,6 +678,10 @@ static VOID demo_init_default_settings(DemoSettings *out)
     out->padding_x = 1;
     out->padding_y = 2;
     out->row_gap = 1;
+    out->row_display_mode = (UWORD)RLV_ROWS_COLLAPSIBLE;
+    out->long_word_mode = (UWORD)RLV_LONG_WORD_CLIP;
+    out->ellipsis_flags = (UWORD)RLV_ELLIPSIS_COLLAPSED_CONTENT;
+    out->initial_expand = (UWORD)RLV_INITIAL_EXPAND_ALL_OPEN;
 }
 
 static BOOL demo_settings_equal(const DemoSettings *a,
@@ -652,6 +702,18 @@ static BOOL demo_settings_equal(const DemoSettings *a,
     if (a->row_gap != b->row_gap) {
         return FALSE;
     }
+    if (a->row_display_mode != b->row_display_mode) {
+        return FALSE;
+    }
+    if (a->long_word_mode != b->long_word_mode) {
+        return FALSE;
+    }
+    if (a->ellipsis_flags != b->ellipsis_flags) {
+        return FALSE;
+    }
+    if (a->initial_expand != b->initial_expand) {
+        return FALSE;
+    }
     return TRUE;
 }
 
@@ -665,6 +727,10 @@ static VOID demo_copy_settings(DemoSettings *dst,
     dst->padding_x = src->padding_x;
     dst->padding_y = src->padding_y;
     dst->row_gap = src->row_gap;
+    dst->row_display_mode = src->row_display_mode;
+    dst->long_word_mode = src->long_word_mode;
+    dst->ellipsis_flags = src->ellipsis_flags;
+    dst->initial_expand = src->initial_expand;
 }
 
 static BOOL demo_menu_item_matches_pending(ULONG item_id,
@@ -689,6 +755,26 @@ static BOOL demo_menu_item_matches_pending(ULONG item_id,
     }
     if (cmd == (UWORD)DEMO_MENU_CMD_GAP) {
         return (BOOL)(val == pending->row_gap);
+    }
+    if (cmd == (UWORD)DEMO_MENU_CMD_ROWDISP) {
+        return (BOOL)(val == pending->row_display_mode);
+    }
+    if (cmd == (UWORD)DEMO_MENU_CMD_INITEXP) {
+        return (BOOL)(val == pending->initial_expand);
+    }
+    if (cmd == (UWORD)DEMO_MENU_CMD_LONGWORD) {
+        return (BOOL)(val == pending->long_word_mode);
+    }
+    if (cmd == (UWORD)DEMO_MENU_CMD_ELLIPSIS) {
+        if (val == (UWORD)DEMO_ELLIP_VAL_COLLAPSED) {
+            return (BOOL)((pending->ellipsis_flags
+                           & RLV_ELLIPSIS_COLLAPSED_CONTENT) != 0);
+        }
+        if (val == (UWORD)DEMO_ELLIP_VAL_HORIZONTAL) {
+            return (BOOL)((pending->ellipsis_flags
+                           & RLV_ELLIPSIS_HORIZONTAL_CLIP) != 0);
+        }
+        return FALSE;
     }
     return FALSE;
 }
@@ -835,6 +921,38 @@ static BOOL demo_handle_menu_selection(ULONG menu_number,
                 g_demo_pending.row_gap = val;
                 changed = TRUE;
             }
+        } else if (cmd == (UWORD)DEMO_MENU_CMD_ROWDISP) {
+            if ((val == (UWORD)RLV_ROWS_COLLAPSIBLE
+                 || val == (UWORD)RLV_ROWS_ALWAYS_EXPANDED
+                 || val == (UWORD)RLV_ROWS_SINGLE_LINE)
+                && g_demo_pending.row_display_mode != val) {
+                g_demo_pending.row_display_mode = val;
+                changed = TRUE;
+            }
+        } else if (cmd == (UWORD)DEMO_MENU_CMD_INITEXP) {
+            if ((val == (UWORD)RLV_INITIAL_EXPAND_ALL_OPEN
+                 || val == (UWORD)RLV_INITIAL_EXPAND_ALL_COLLAPSED)
+                && g_demo_pending.initial_expand != val) {
+                g_demo_pending.initial_expand = val;
+                changed = TRUE;
+            }
+        } else if (cmd == (UWORD)DEMO_MENU_CMD_LONGWORD) {
+            if ((val == (UWORD)RLV_LONG_WORD_CLIP
+                 || val == (UWORD)RLV_LONG_WORD_WRAP)
+                && g_demo_pending.long_word_mode != val) {
+                g_demo_pending.long_word_mode = val;
+                changed = TRUE;
+            }
+        } else if (cmd == (UWORD)DEMO_MENU_CMD_ELLIPSIS) {
+            if (val == (UWORD)DEMO_ELLIP_VAL_COLLAPSED) {
+                g_demo_pending.ellipsis_flags ^=
+                    (UWORD)RLV_ELLIPSIS_COLLAPSED_CONTENT;
+                changed = TRUE;
+            } else if (val == (UWORD)DEMO_ELLIP_VAL_HORIZONTAL) {
+                g_demo_pending.ellipsis_flags ^=
+                    (UWORD)RLV_ELLIPSIS_HORIZONTAL_CLIP;
+                changed = TRUE;
+            }
         } else if (cmd == (UWORD)DEMO_MENU_CMD_RESET) {
             demo_init_default_settings(&g_demo_pending);
             changed = TRUE;
@@ -878,6 +996,92 @@ static VOID demo_apply_policies(RLV_Control *control)
     }
     rlv_set_control_activation_policy(control, g_demo_activation_policy);
     rlv_set_current_row_visual(control, g_demo_current_row_visual);
+}
+
+static VOID demo_apply_display_settings(RLV_Control *control,
+                                        const DemoSettings *settings)
+{
+    if (control == 0 || settings == 0) {
+        return;
+    }
+    rlv_set_row_display_mode(control, settings->row_display_mode);
+    rlv_set_long_word_mode(control, settings->long_word_mode);
+    rlv_set_ellipsis_flags(control, settings->ellipsis_flags);
+}
+
+/*
+ * Write RLV_ROW_EXPANDED on every expandable app row from the creation
+ * policy (used when Start rows changes, or at init).
+ */
+static VOID demo_apply_initial_expand_to_rows(UWORD mode)
+{
+    ULONG i;
+    BOOL want_open;
+
+    want_open = (mode != (UWORD)RLV_INITIAL_EXPAND_ALL_COLLAPSED)
+                ? TRUE : FALSE;
+    for (i = 0; i < g_demo_row_count && i < (ULONG)DEMO_MAX_ROWS; i++) {
+        if ((g_rows[i].flags & RLV_ROW_EXPANDABLE) == 0) {
+            continue;
+        }
+        if (want_open) {
+            g_rows[i].flags = (UWORD)(g_rows[i].flags | RLV_ROW_EXPANDED);
+        } else {
+            g_rows[i].flags = (UWORD)(g_rows[i].flags
+                                      & (UWORD)~RLV_ROW_EXPANDED);
+        }
+    }
+}
+
+/* Copy live control expand bits into app-owned RLV_Row.flags. */
+static VOID demo_sync_row_expand_flags_from_control(RLV_Control *control)
+{
+    ULONG i;
+
+    if (control == 0) {
+        return;
+    }
+    for (i = 0; i < g_demo_row_count && i < (ULONG)DEMO_MAX_ROWS; i++) {
+        if ((g_rows[i].flags & RLV_ROW_EXPANDABLE) == 0) {
+            continue;
+        }
+        if (rlv_is_row_expanded(control, (LONG)i)) {
+            g_rows[i].flags = (UWORD)(g_rows[i].flags | RLV_ROW_EXPANDED);
+        } else {
+            g_rows[i].flags = (UWORD)(g_rows[i].flags
+                                      & (UWORD)~RLV_ROW_EXPANDED);
+        }
+    }
+}
+
+/*
+ * After a recreate that re-applied the creation policy, restore expand
+ * bits from g_rows (interactive state) without emitting CELL_CONTROL.
+ */
+static VOID demo_restore_expand_from_row_flags(RLV_Control *control)
+{
+    ULONG i;
+    BOOL want;
+    BOOL have;
+
+    if (control == 0) {
+        return;
+    }
+    for (i = 0; i < g_demo_row_count && i < (ULONG)DEMO_MAX_ROWS; i++) {
+        if ((g_rows[i].flags & RLV_ROW_EXPANDABLE) == 0) {
+            continue;
+        }
+        want = ((g_rows[i].flags & RLV_ROW_EXPANDED) != 0) ? TRUE : FALSE;
+        have = rlv_is_row_expanded(control, (LONG)i);
+        if (want == have) {
+            continue;
+        }
+        if (want) {
+            (VOID)rlv_expand_row(control, (LONG)i);
+        } else {
+            (VOID)rlv_collapse_row(control, (LONG)i);
+        }
+    }
 }
 
 static VOID demo_cycle_activation_policy(struct Window *win,
@@ -2087,6 +2291,7 @@ static BOOL demo_recreate_control(RLV_Control **control_io,
     LONG selected;
     LONG scroll_y;
     BOOL keyboard_enabled;
+    BOOL preserve_expand;
 
     if (control_io == 0 || backend == 0 || pens == 0
         || columns == 0 || bounds == 0 || settings == 0) {
@@ -2097,6 +2302,7 @@ static BOOL demo_recreate_control(RLV_Control **control_io,
     selected = -1;
     scroll_y = 0;
     keyboard_enabled = keyboard_off ? FALSE : TRUE;
+    preserve_expand = FALSE;
     if (old_control != 0) {
         selected = rlv_get_selected(old_control);
         scroll_y = rlv_get_scroll_y(old_control);
@@ -2106,6 +2312,18 @@ static BOOL demo_recreate_control(RLV_Control **control_io,
             rlv_get_control_activation_policy(old_control);
         g_demo_current_row_visual =
             rlv_get_current_row_visual(old_control);
+        /*
+         * Same Start-rows policy: keep interactive expand state in g_rows.
+         * Changed policy: rewrite g_rows to all open/collapsed.
+         */
+        if (settings->initial_expand == g_demo_applied.initial_expand) {
+            demo_sync_row_expand_flags_from_control(old_control);
+            preserve_expand = TRUE;
+        } else {
+            demo_apply_initial_expand_to_rows(settings->initial_expand);
+        }
+    } else {
+        demo_apply_initial_expand_to_rows(settings->initial_expand);
     }
 
     memset(&cfg, 0, sizeof(cfg));
@@ -2116,6 +2334,7 @@ static BOOL demo_recreate_control(RLV_Control **control_io,
     cfg.cell_padding_y = settings->padding_y;
     cfg.row_gap = settings->row_gap;
     cfg.row_divider_style = settings->divider_style;
+    cfg.initial_expand = settings->initial_expand;
     if (!keyboard_enabled) {
         cfg.flags = RLV_CFG_NO_KEYBOARD;
     }
@@ -2131,8 +2350,13 @@ static BOOL demo_recreate_control(RLV_Control **control_io,
         return FALSE;
     }
 
-    rlv_set_bounds(new_control, bounds);
+    /* Display policies before set_bounds so the first layout is correct. */
+    demo_apply_display_settings(new_control, settings);
     demo_apply_policies(new_control);
+    if (preserve_expand) {
+        demo_restore_expand_from_row_flags(new_control);
+    }
+    rlv_set_bounds(new_control, bounds);
     rlv_set_selected(new_control, selected);
     rlv_set_scroll_y(new_control, scroll_y);
 
@@ -2177,11 +2401,16 @@ static BOOL demo_apply_pending_settings(RLV_Control **control_io,
     demo_sync_scroller(win, scroller, *control_io, last_top);
     demo_update_apply_enabled_state(win);
     demo_update_status_text(win, "Settings applied");
-    RLV_LOGF("SETTINGS applied div=%u xpad=%u ypad=%u gap=%u",
+    RLV_LOGF("SETTINGS applied div=%u xpad=%u ypad=%u gap=%u "
+             "rowdisp=%u longword=%u ellip=0x%x initexp=%u",
              (unsigned)g_demo_applied.divider_style,
              (unsigned)g_demo_applied.padding_x,
              (unsigned)g_demo_applied.padding_y,
-             (unsigned)g_demo_applied.row_gap);
+             (unsigned)g_demo_applied.row_gap,
+             (unsigned)g_demo_applied.row_display_mode,
+             (unsigned)g_demo_applied.long_word_mode,
+             (unsigned)g_demo_applied.ellipsis_flags,
+             (unsigned)g_demo_applied.initial_expand);
     return TRUE;
 }
 
@@ -2286,11 +2515,15 @@ int main(int argc, char **argv)
     RLV_LOGF("startup activation_policy=%u visual=%u",
              (unsigned)g_demo_activation_policy,
              (unsigned)g_demo_current_row_visual);
-    RLV_LOGF("startup settings div=%u xpad=%u ypad=%u gap=%u",
+    RLV_LOGF("startup settings div=%u xpad=%u ypad=%u gap=%u "
+             "rowdisp=%u longword=%u ellip=0x%x",
              (unsigned)g_demo_applied.divider_style,
              (unsigned)g_demo_applied.padding_x,
              (unsigned)g_demo_applied.padding_y,
-             (unsigned)g_demo_applied.row_gap);
+             (unsigned)g_demo_applied.row_gap,
+             (unsigned)g_demo_applied.row_display_mode,
+             (unsigned)g_demo_applied.long_word_mode,
+             (unsigned)g_demo_applied.ellipsis_flags);
 
     screen = LockPubScreen(NULL);
     if (screen == 0) {
@@ -2516,6 +2749,7 @@ int main(int argc, char **argv)
     cfg.cell_padding_y = g_demo_applied.padding_y;
     cfg.row_gap = g_demo_applied.row_gap;
     cfg.row_divider_style = g_demo_applied.divider_style;
+    cfg.initial_expand = g_demo_applied.initial_expand;
     cfg.flags = 0;
 
     control = rlv_create(&cfg);
@@ -2538,8 +2772,9 @@ int main(int argc, char **argv)
     }
 
     demo_bounds_from_geom(&geom, &bounds);
-    rlv_set_bounds(control, &bounds);
+    demo_apply_display_settings(control, &g_demo_applied);
     demo_apply_policies(control);
+    rlv_set_bounds(control, &bounds);
     /* Single-control demo: first instance is initially active. */
     active_control = control;
     if (keyboard_off) {
@@ -2556,7 +2791,8 @@ int main(int argc, char **argv)
     printf("Return activates selection; Space toggles sole checkbox. Click control for focus.\n");
     printf("A = toggle activation policy (SELECT_ROW / KEEP_CURRENT).\n");
     printf("V = cycle current-row visual (FULL / MARKER / NONE).\n");
-    printf("Settings menu selects pending divider/padding/gap; Apply commits.\n");
+    printf("Settings menu selects pending divider/padding/gap/row-display/"
+           "long-word/ellipsis; Apply commits.\n");
     printf("Row 3 (-- Category --) is non-selectable; Delta/Theta have empty disclosure cells.\n");
     printf("Activation=%s  Visual=%s\n",
            demo_activation_policy_name(g_demo_activation_policy),

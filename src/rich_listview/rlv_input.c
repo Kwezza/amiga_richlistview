@@ -181,6 +181,9 @@ static BOOL rlv_hit_interactive_disclosure(const RLV_Control *c,
     if (!rlv_is_row_expandable(c, row)) {
         return FALSE;
     }
+    if (!rlv_disclosure_ui_enabled(c)) {
+        return FALSE;
+    }
     if (!rlv_row_has_multi_line_wrap(c, row)) {
         return FALSE;
     }

@@ -72,6 +72,16 @@
  *   as rlv_set_checkbox_value). Layout rebuild and viewport anchoring run
  *   inside those APIs and the input path; the application must repaint
  *   (typically full viewport) after a disclosure CELL_CONTROL or API call.
+ *
+ * Display policies (defaults preserve historical appearance):
+ *   rlv_set_row_display_mode -- COLLAPSIBLE (default) / ALWAYS_EXPANDED /
+ *     SINGLE_LINE. Non-collapsible modes suppress disclosure UI but retain
+ *     per-row expand bits. Geometry change: invalidate + rebuild + full paint.
+ *   rlv_set_long_word_mode -- CLIP (default) / WRAP for RLV_WRAP_WORD only;
+ *     WORD_OR_CHAR and PATH keep explicit column semantics; NONE always clips.
+ *   rlv_set_ellipsis_flags -- independent COLLAPSED_CONTENT and HORIZONTAL_CLIP
+ *     markers (three hand-drawn dots, not three periods). Default is
+ *     COLLAPSED_CONTENT on; HORIZONTAL_CLIP off.
  */
 
 #include "rich_listview/rlv_draw.h"
@@ -113,6 +123,19 @@ typedef enum RLV_RowDividerStyle
 #define RLV_CFG_NO_KEYBOARD  0x0001U  /* start with NAV_* disabled */
 
 /*
+ * Initial expand state for expandable rows when rows are first loaded
+ * after rlv_create (and again after a new create). Default 0 opens every
+ * expandable row. Per-row RLV_ROW_EXPANDED is overridden by this policy
+ * on that first load; later set_rows calls honor row flags so live
+ * expand/collapse can be preserved across data refresh.
+ */
+typedef enum RLV_InitialExpandMode
+{
+    RLV_INITIAL_EXPAND_ALL_OPEN = 0,
+    RLV_INITIAL_EXPAND_ALL_COLLAPSED
+} RLV_InitialExpandMode;
+
+/*
  * How embedded cell controls interact with the current/selected row.
  * Default 0 preserves historical SELECT_DOWN selection behaviour.
  * Policies are presentation/input only — they do not rebuild layout.
@@ -137,6 +160,38 @@ typedef enum RLV_CurrentRowVisual
 } RLV_CurrentRowVisual;
 
 /*
+ * Global row-height / disclosure policy. Default 0 preserves historical
+ * collapsible expandable-row behaviour. Changing mode invalidates layout;
+ * caller must rebuild (e.g. rlv_set_bounds) and full-repaint -- never
+ * smart-scroll. Per-row expand bits are retained while disclosure UI is
+ * suppressed so returning to COLLAPSIBLE restores prior row states.
+ */
+typedef enum RLV_RowDisplayMode
+{
+    RLV_ROWS_COLLAPSIBLE = 0,   /* wrap + optional collapse/disclosure */
+    RLV_ROWS_ALWAYS_EXPANDED,   /* full natural height; no disclosure UI */
+    RLV_ROWS_SINGLE_LINE        /* one text line + padding/gap; no disclosure */
+} RLV_RowDisplayMode;
+
+/*
+ * Control-level default for an indivisible word wider than the column.
+ * Applies to RLV_WRAP_WORD only. Explicit RLV_WRAP_WORD_OR_CHAR and
+ * RLV_WRAP_PATH keep their column semantics. RLV_WRAP_NONE always clips.
+ * Default 0 = clip (compatibility with Truncated-style prefixes).
+ */
+typedef enum RLV_LongWordMode
+{
+    RLV_LONG_WORD_CLIP = 0, /* do not character-split; clip the prefix */
+    RLV_LONG_WORD_WRAP      /* measured character fallback after breaks fail */
+} RLV_LongWordMode;
+
+/* Ellipsis policy flags (independent).
+ * Default after rlv_create: RLV_ELLIPSIS_COLLAPSED_CONTENT (horizontal off). */
+#define RLV_ELLIPSIS_NONE                 0U
+#define RLV_ELLIPSIS_COLLAPSED_CONTENT    (1U << 0) /* hidden wrap lines */
+#define RLV_ELLIPSIS_HORIZONTAL_CLIP      (1U << 1) /* width-clipped text */
+
+/*
  * Result of rlv_render_cell_control. Distinguishes a successful local
  * paint, nothing visible, documented fallbacks, and hard errors.
  */
@@ -159,6 +214,8 @@ typedef struct RLV_Config
     UWORD row_gap;                      /* pixels between logical rows */
     UWORD row_divider_style;            /* RLV_RowDividerStyle */
     UWORD flags;                        /* RLV_CFG_*; 0 = defaults */
+    /* Appended: zero-init selects RLV_INITIAL_EXPAND_ALL_OPEN. */
+    UWORD initial_expand;               /* RLV_InitialExpandMode */
 } RLV_Config;
 
 /* RLV_Row.flags */
@@ -387,6 +444,21 @@ UWORD rlv_get_control_activation_policy(const RLV_Control *c);
  */
 VOID rlv_set_current_row_visual(RLV_Control *c, UWORD visual);
 UWORD rlv_get_current_row_visual(const RLV_Control *c);
+
+/*
+ * Row-display / long-word / ellipsis policies. Defaults match current
+ * product behaviour (collapsible, long-word clip, collapsed-content
+ * ellipsis on, horizontal ellipsis off).
+ * Invalid enum/flag bits are ignored (state unchanged). Geometry-changing
+ * modes invalidate layout; caller rebuilds once then full-repaints.
+ * Ellipsis markers are three compact hand-drawn dots (not "..." text).
+ */
+VOID rlv_set_row_display_mode(RLV_Control *c, UWORD mode);
+UWORD rlv_get_row_display_mode(const RLV_Control *c);
+VOID rlv_set_long_word_mode(RLV_Control *c, UWORD mode);
+UWORD rlv_get_long_word_mode(const RLV_Control *c);
+VOID rlv_set_ellipsis_flags(RLV_Control *c, UWORD flags);
+UWORD rlv_get_ellipsis_flags(const RLV_Control *c);
 
 /* flags: 0 = full (header + viewport + frame);
  * RLV_RENDER_VIEWPORT_ONLY = scroll/selection update without touching frame. */

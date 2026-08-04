@@ -1,5 +1,32 @@
 # RichListview — Dev Log
 
+## 2026-08-04 — Default collapsed-content ellipsis on
+
+Control and demo now default `RLV_ELLIPSIS_COLLAPSED_CONTENT` on
+(horizontal clip still off). Demo Settings → Ellipsis checks match on load.
+
+## 2026-08-04 — Initial expand creation parameter
+
+Added `RLV_Config.initial_expand` (`ALL_OPEN` default / `ALL_COLLAPSED`)
+applied on the first `set_rows` after create. Demo Settings → **Start rows**
+with default All open; Apply recreates with the chosen policy.
+
+## 2026-08-04 — Row display / long-word / ellipsis policies
+
+Added public display policies and compact three-dot ellipsis rendering,
+wired into the existing Settings menu + Apply workflow.
+
+**Delivered**
+- `RLV_ROWS_COLLAPSIBLE` / `ALWAYS_EXPANDED` / `SINGLE_LINE`
+- `RLV_LONG_WORD_CLIP` / `WRAP` (applies to `RLV_WRAP_WORD`; WORD_OR_CHAR/PATH unchanged)
+- `RLV_ELLIPSIS_COLLAPSED_CONTENT` / `HORIZONTAL_CLIP` (hand-drawn dots)
+- Demo menu groups + defaults (Collapsible, Clip, ellipsis off)
+- Status sample `Truncated` on `RLV_WRAP_WORD` for long-word tests
+- Restored corrupted `docs/RICHLISTVIEW_OVERVIEW.md` from `dec2e16` and extended §2.10
+
+**Build:** `make rich-listview-demo` + log/bench/nosmart + `public-header-audit`
+all OK. Normal demo `57372` bytes (was `54676`). Not run under emulation.
+
 ## 2026-08-04 — Demo Settings menu + Apply workflow
 
 Moved divider / X pad / Y pad / row-gap visual test controls from bottom-row
@@ -24,19 +51,10 @@ checkbox, selection, and current-row visual state.
 - `rlv_expand.c` + `rlv_disclosure.c`; gate `RLV_ENABLE_EXPANDABLE_ROWS` (default on)
 - `CELL_CONTROL` with `DISCLOSURE` + `EXPANDED`/`COLLAPSED` (mouse/keyboard only)
 - Demo: disclosure column, mixed rows, Right/Left/`C`, status-line events
-- Docs: overview §2.9, demo README, wishlist §2 status, implementation report
+- Docs: overview §2.9, demo README, wishlist status, implementation report
 
-**Build:** `make rich-listview-demo` clean rebuild OK (demo ~52 KB; expand+disclosure
-objects ~6 KB). Not run under emulation in this session.
-
-**Session fixes**
-- Disclosure column width: demo font-scaling remapped col 0 to `2 * font_w`
-  (was overwriting with Name width).
-- Single-line expandable rows (e.g. Zeta): suppress `+/-` when wrap is one line.
-- Faster expand/collapse paint: `rlv_render_from_row` + smart-scroll
-  `ScrollRaster` of content below the toggled row (row + exposed band only).
-- Selection bleed on collapse: blit split at `min(old_h, new_h)` so the freed
-  strip is overwritten (selected Beta no longer paints into Gamma).
+**Build:** `make clean && make rich-listview-demo` OK. Not run under emulation
+in the original session.
 
 **Report:** `docs/RICHLISTVIEW_EXPANDABLE_ROWS_IMPLEMENTATION_REPORT.md`
 
@@ -50,8 +68,5 @@ Implemented the first wishlist item: embedded checkboxes can activate without se
 - `rlv_render_cell_control()` for checkbox-only repaint with safe row/viewport fallback
 - Demo keys `A` / `V` and CLI `KEEPCURRENT` / `MARKER` / `NOVISUAL`
 - Docs, overview, wishlist status, and implementation report
-
-**Follow-up fix**
-- First post-change binaries crashed at layout rebuild (`Software Failure #8000000B`) because new `RLV_Control` fields were inserted mid-struct while the Makefile did not rebuild all objects on header change. Fields moved to the end of the struct; Makefile gained header dependencies; clean rebuild resolved it.
 
 **Report:** `docs/RICHLISTVIEW_CONTROL_ACTIVATION_POLICY_IMPLEMENTATION_REPORT.md`

@@ -387,6 +387,10 @@ static BOOL rlv_layout_rows(RLV_Control *c)
     for (i = 0; i < c->row_count; i++) {
         RLV_BENCH_COUNT(RLV_BENCH_COUNTER_ROW_HEIGHT_CALCS);
         max_lines = 1;
+        if (c->row_display_mode == (UWORD)RLV_ROWS_SINGLE_LINE) {
+            /* One text line + padding/gap; wrap cache retained. */
+            max_lines = 1;
+        } else
 #if defined(RLV_ENABLE_EXPANDABLE_ROWS) && (RLV_ENABLE_EXPANDABLE_ROWS != 0)
         if (rlv_row_is_collapsed_compact(c, (LONG)i)) {
             /* Intentional one-line compact height; wrap cache retained. */
@@ -469,7 +473,9 @@ BOOL rlv_layout_reheight_from(RLV_Control *c, ULONG from_row)
     for (i = from_row; i < c->row_count; i++) {
         RLV_BENCH_COUNT(RLV_BENCH_COUNTER_ROW_HEIGHT_CALCS);
         max_lines = 1;
-        if (rlv_row_is_collapsed_compact(c, (LONG)i)) {
+        if (c->row_display_mode == (UWORD)RLV_ROWS_SINGLE_LINE) {
+            max_lines = 1;
+        } else if (rlv_row_is_collapsed_compact(c, (LONG)i)) {
             max_lines = 1;
         } else {
             for (col = 0; col < c->column_count; col++) {

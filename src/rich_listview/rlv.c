@@ -206,6 +206,14 @@ RLV_Control *rlv_create(const RLV_Config *cfg)
     c->control_activation_policy =
         (UWORD)RLV_CONTROL_ACTIVATE_SELECT_ROW;
     c->current_row_visual = (UWORD)RLV_CURRENT_ROW_VISUAL_FULL;
+    c->row_display_mode = (UWORD)RLV_ROWS_COLLAPSIBLE;
+    c->long_word_mode = (UWORD)RLV_LONG_WORD_CLIP;
+    c->ellipsis_flags = (UWORD)RLV_ELLIPSIS_COLLAPSED_CONTENT;
+    c->initial_expand = (UWORD)RLV_INITIAL_EXPAND_ALL_OPEN;
+    if (cfg->initial_expand == (UWORD)RLV_INITIAL_EXPAND_ALL_COLLAPSED) {
+        c->initial_expand = (UWORD)RLV_INITIAL_EXPAND_ALL_COLLAPSED;
+    }
+    c->apply_initial_expand = TRUE;
     c->control_armed = FALSE;
     c->armed_row = -1;
     c->armed_column = 0;
@@ -573,6 +581,103 @@ UWORD rlv_get_current_row_visual(const RLV_Control *c)
         return (UWORD)RLV_CURRENT_ROW_VISUAL_FULL;
     }
     return c->current_row_visual;
+}
+
+VOID rlv_set_row_display_mode(RLV_Control *c, UWORD mode)
+{
+    if (c == 0) {
+        return;
+    }
+    if (mode != (UWORD)RLV_ROWS_COLLAPSIBLE
+        && mode != (UWORD)RLV_ROWS_ALWAYS_EXPANDED
+        && mode != (UWORD)RLV_ROWS_SINGLE_LINE) {
+        return;
+    }
+    if (c->row_display_mode == mode) {
+        return;
+    }
+    c->row_display_mode = mode;
+    c->control_armed = FALSE;
+    c->armed_row = -1;
+    c->armed_column = 0;
+    c->armed_type = 0;
+    rlv_layout_invalidate(c);
+    RLV_LOGF("row_display_mode=%u", (unsigned)mode);
+}
+
+UWORD rlv_get_row_display_mode(const RLV_Control *c)
+{
+    if (c == 0) {
+        return (UWORD)RLV_ROWS_COLLAPSIBLE;
+    }
+    return c->row_display_mode;
+}
+
+VOID rlv_set_long_word_mode(RLV_Control *c, UWORD mode)
+{
+    if (c == 0) {
+        return;
+    }
+    if (mode != (UWORD)RLV_LONG_WORD_CLIP
+        && mode != (UWORD)RLV_LONG_WORD_WRAP) {
+        return;
+    }
+    if (c->long_word_mode == mode) {
+        return;
+    }
+    c->long_word_mode = mode;
+    rlv_layout_invalidate(c);
+    RLV_LOGF("long_word_mode=%u", (unsigned)mode);
+}
+
+UWORD rlv_get_long_word_mode(const RLV_Control *c)
+{
+    if (c == 0) {
+        return (UWORD)RLV_LONG_WORD_CLIP;
+    }
+    return c->long_word_mode;
+}
+
+VOID rlv_set_ellipsis_flags(RLV_Control *c, UWORD flags)
+{
+    UWORD allowed;
+
+    if (c == 0) {
+        return;
+    }
+    allowed = (UWORD)(RLV_ELLIPSIS_COLLAPSED_CONTENT
+                      | RLV_ELLIPSIS_HORIZONTAL_CLIP);
+    if ((flags & (UWORD)~allowed) != 0) {
+        return;
+    }
+    if (c->ellipsis_flags == flags) {
+        return;
+    }
+    c->ellipsis_flags = flags;
+    /* Paint-time fit only; natural row height is unchanged. */
+    RLV_LOGF("ellipsis_flags=0x%x", (unsigned)flags);
+}
+
+UWORD rlv_get_ellipsis_flags(const RLV_Control *c)
+{
+    if (c == 0) {
+        return (UWORD)RLV_ELLIPSIS_COLLAPSED_CONTENT;
+    }
+    return c->ellipsis_flags;
+}
+
+BOOL rlv_disclosure_ui_enabled(const RLV_Control *c)
+{
+    if (c == 0) {
+        return FALSE;
+    }
+#if defined(RLV_ENABLE_EXPANDABLE_ROWS) && (RLV_ENABLE_EXPANDABLE_ROWS != 0)
+    return (c->row_display_mode == (UWORD)RLV_ROWS_COLLAPSIBLE)
+           ? TRUE : FALSE;
+#else
+    (void)c;
+    return FALSE;
+#endif
 }
 
 VOID rlv_render(RLV_Control *c, ULONG flags)

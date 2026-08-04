@@ -17,6 +17,32 @@ static BOOL rlv_is_path_break(char c)
             || c == ' ' || c == '\t');
 }
 
+static BOOL rlv_has_soft_break(const char *s,
+                                    UWORD fit_len,
+                                    UWORD mode)
+{
+    UWORD i;
+
+    if (s == 0 || fit_len == 0) {
+        return FALSE;
+    }
+    if (mode == RLV_WRAP_NONE) {
+        return FALSE;
+    }
+
+    for (i = 1; i <= fit_len && s[i - 1] != '\0'; i++) {
+        char c = s[i - 1];
+
+        if (c == ' ' || c == '\t') {
+            return TRUE;
+        }
+        if (mode == RLV_WRAP_PATH && rlv_is_path_break(c)) {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
 static UWORD rlv_find_pixel_break(const char *s,
                                        UWORD fit_len,
                                        UWORD mode)
@@ -193,6 +219,8 @@ static BOOL rlv_wrap_cell(RLV_Control *c,
     UWORD count;
     const char *p;
     WORD first_x;
+    UWORD long_word;
+    BOOL stop_after_clip;
 
     if (c == 0 || col == 0 || out == 0 || c->draw_ops == 0) {
         return FALSE;
@@ -204,6 +232,7 @@ static BOOL rlv_wrap_cell(RLV_Control *c,
     ctx = c->draw_context;
     out->frags = 0;
     out->frag_count = 0;
+    out->flags = 0;
 
     if (src == 0) {
         src = "";
@@ -214,6 +243,18 @@ static BOOL rlv_wrap_cell(RLV_Control *c,
     fit_width = (WORD)(text_right - text_left + 1);
     if (fit_width < 1) {
         fit_width = 0;
+    }
+
+    /*
+     * Long-word policy applies to RLV_WRAP_WORD only. Explicit
+     * WORD_OR_CHAR / PATH keep character/path fallback. NONE always clips.
+     */
+    long_word = (UWORD)RLV_LONG_WORD_CLIP;
+    if (wrap_mode == (UWORD)RLV_WRAP_WORD) {
+        long_word = c->long_word_mode;
+    } else if (wrap_mode == (UWORD)RLV_WRAP_WORD_OR_CHAR
+               || wrap_mode == (UWORD)RLV_WRAP_PATH) {
+        long_word = (UWORD)RLV_LONG_WORD_WRAP;
     }
 
     count = 0;
@@ -238,6 +279,9 @@ static BOOL rlv_wrap_cell(RLV_Control *c,
                                                      text_right,
                                                      w);
         count = 1;
+        if (fitted < full_len) {
+            out->flags = (UWORD)RLV_CELLWRAP_F_HORIZ_CLIPPED;
+        }
     } else {
         p = (const char *)src;
 
@@ -248,6 +292,8 @@ static BOOL rlv_wrap_cell(RLV_Control *c,
             UWORD take;
             UWORD w;
             WORD x;
+
+            stop_after_clip = FALSE;
 
             /* Explicit newlines force a fragment boundary. */
             if (*p == '\n' || *p == '\r') {
@@ -293,13 +339,31 @@ static BOOL rlv_wrap_cell(RLV_Control *c,
                 if (fitted == 0) {
                     fitted = 1;
                 }
-                take = rlv_find_pixel_break(seg_start, fitted,
-                                                 wrap_mode);
-                if (take == 0) {
+
+                /*
+                 * WORD + CLIP: an indivisible overlong word stays on one
+                 * line; remaining source is horizontally clipped (not
+                 * another wrap line, not expandable by this word alone).
+                 */
+                if (wrap_mode == (UWORD)RLV_WRAP_WORD
+                    && long_word == (UWORD)RLV_LONG_WORD_CLIP
+                    && !rlv_has_soft_break(seg_start, fitted, wrap_mode)) {
                     take = fitted;
-                }
-                if (take > seg_len) {
-                    take = seg_len;
+                    if (take > seg_len) {
+                        take = seg_len;
+                    }
+                    stop_after_clip = TRUE;
+                    out->flags = (UWORD)(out->flags
+                                         | RLV_CELLWRAP_F_HORIZ_CLIPPED);
+                } else {
+                    take = rlv_find_pixel_break(seg_start, fitted,
+                                                     wrap_mode);
+                    if (take == 0) {
+                        take = fitted;
+                    }
+                    if (take > seg_len) {
+                        take = seg_len;
+                    }
                 }
             }
 
@@ -322,6 +386,10 @@ static BOOL rlv_wrap_cell(RLV_Control *c,
             stack_frags[count].width_pixels = w;
             stack_frags[count].relative_x = x;
             count++;
+
+            if (stop_after_clip) {
+                break;
+            }
 
             p = seg_start + take;
             /* Skip a single leading space after a word break. */

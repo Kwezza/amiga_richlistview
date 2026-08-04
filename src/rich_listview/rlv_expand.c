@@ -56,7 +56,12 @@ BOOL rlv_refresh_row_expand(RLV_Control *c)
         bits = 0;
         if ((flags & RLV_ROW_EXPANDABLE) != 0) {
             bits = (UBYTE)RLV_ROWEXP_EXPANDABLE;
-            if ((flags & RLV_ROW_EXPANDED) != 0) {
+            if (c->apply_initial_expand) {
+                if (c->initial_expand
+                    != (UWORD)RLV_INITIAL_EXPAND_ALL_COLLAPSED) {
+                    bits = (UBYTE)(bits | RLV_ROWEXP_EXPANDED);
+                }
+            } else if ((flags & RLV_ROW_EXPANDED) != 0) {
                 bits = (UBYTE)(bits | RLV_ROWEXP_EXPANDED);
             }
         }
@@ -65,6 +70,7 @@ BOOL rlv_refresh_row_expand(RLV_Control *c)
 
     c->row_expand = snap;
     c->row_expand_count = c->row_count;
+    c->apply_initial_expand = FALSE;
     return TRUE;
 }
 
@@ -73,6 +79,10 @@ BOOL rlv_row_is_collapsed_compact(const RLV_Control *c, LONG logical_row)
     UBYTE bits;
 
     if (c == 0 || c->row_expand == 0) {
+        return FALSE;
+    }
+    /* Compact height only while disclosure UI is active. */
+    if (!rlv_disclosure_ui_enabled(c)) {
         return FALSE;
     }
     if (logical_row < 0 || (ULONG)logical_row >= c->row_expand_count) {
@@ -235,6 +245,16 @@ BOOL rlv_set_row_expanded(RLV_Control *c,
     /* Nothing to disclose when wrap is a single line (glyph also hidden). */
     if (!rlv_row_has_multi_line_wrap(c, row)) {
         RLV_LOGF("EXPAND reject single-line wrap row=%ld", (long)row);
+        return FALSE;
+    }
+
+    /*
+     * Mouse/keyboard disclosure only while COLLAPSIBLE. Programmatic API
+     * may still mutate expand bits so Always/Single-line can restore them.
+     */
+    if ((source_flags & (RLV_EXPAND_SRC_MOUSE | RLV_EXPAND_SRC_KEY)) != 0
+        && !rlv_disclosure_ui_enabled(c)) {
+        RLV_LOGF("EXPAND reject disclosure UI off row=%ld", (long)row);
         return FALSE;
     }
 

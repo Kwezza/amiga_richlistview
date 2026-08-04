@@ -7,10 +7,12 @@
 - Body cells retain dark-right/shine-left vertical edges
 - Configurable data-row dividers: none, solid, or one-on/one-off dotted
 - Shared title/body horizontal and vertical cell padding
-- **Settings** menu selects pending divider, X/Y padding, and row-gap
-  values (same presets as the former cycle gadgets); **Apply** commits
-  them in one recreate + full repaint. Apply stays disabled while pending
-  matches the settings currently on the ListView
+- **Settings** menu selects pending divider, X/Y padding, row-gap,
+  row-display mode, long-word mode, and ellipsis flags (same Apply
+  workflow as before); **Apply** commits them in one recreate + full
+  repaint. Apply stays disabled while pending matches the settings
+  currently on the ListView. Defaults: Collapsible, Preserve clipping,
+  collapsed-content ellipsis on, horizontal ellipsis off.
 - One-pixel `SHADOWPEN` outer outline
 - Manually drawn viewport (no GadTools `LISTVIEW_KIND`)
 - Variable-height logical rows with pixel-measured word wrapping
@@ -128,6 +130,34 @@ Requires `RLV_ENABLE_EXPANDABLE_ROWS=1` (Makefile default).
    `rlv_collapse_all` do not emit events; sync app flags yourself and
    repaint. Demo key `C` calls Collapse All.
 
+## Row display, long words, and ellipsis
+
+Settings menu groups (pending until **Apply**):
+
+| Group | Choices | Default |
+|-------|---------|---------|
+| Row display | Collapsible / Always expanded / Single line only | Collapsible |
+| Start rows | All open / All collapsed | All open |
+| Long words | Preserve clipping / Wrap by character | Preserve clipping |
+| Ellipsis | Hidden collapsed text; Horizontally clipped | collapsed on; horizontal off |
+
+Behaviour matrix (acceptance criteria):
+
+| Row mode | Long-word | Collapsed … | Horiz … | Result |
+|----------|-----------|:---:|:---:|--------|
+| Collapsible | Clip | On | Off | Default: multi-word hidden cells show dots; `Truncated` stays clean |
+| Collapsible | Wrap | On | Off | Overlong WORD may wrap and get collapsed dots |
+| Always expanded | either | On | Off | Full natural text; no disclosure / collapsed dots |
+| Single line | Clip | On | Off | One-line rows; collapsed-dot flag ignored |
+| Single line | Clip | Off | On | Horizontally clipped text may show dots |
+
+Markers are three compact hand-drawn dots (not `"..."`). Expansion state is
+retained while Always expanded / Single line suppress disclosure UI.
+
+Demo samples: Gamma Description (collapsed multi-line), Theta Status
+`Truncated` (`RLV_WRAP_WORD`), Eta Name path-like `WORD_OR_CHAR` text,
+checkbox column untouched by ellipsis.
+
 ## Cell-control event notification (integrator contract)
 
 `RLV_EVENT_CELL_CONTROL` is the single application-facing notification for
@@ -159,14 +189,14 @@ Row kinds in this demo:
 
 | Row | Name | Disclosure | Checkbox |
 |-----|------|------------|----------|
-| 0 Alpha | Expandable (start collapsed) | `+` | interactive checked |
-| 1 Beta | Expandable (start expanded) | `-` | interactive unchecked |
-| 2 Gamma | Expandable collapsed (tall when open) | `+` | interactive checked |
+| 0 Alpha | Expandable (start open) | `-` | interactive checked |
+| 1 Beta | Expandable (start open) | `-` | interactive unchecked |
+| 2 Gamma | Expandable (start open; tall) | `-` | interactive checked |
 | 3 Category | Non-selectable heading | empty | none |
 | 4 Delta | Not expandable | empty | display-only checked |
-| 5 Epsilon | Expandable (start expanded, tall) | `-` | interactive unchecked |
-| 6 Zeta | Expandable collapsed | `+` | disabled/ghosted |
-| 7 Eta | Expandable collapsed | `+` | interactive checked |
+| 5 Epsilon | Expandable (start open, tall) | `-` | interactive unchecked |
+| 6 Zeta | Expandable (start open) | `-`/`+` if multi-line | disabled/ghosted |
+| 7 Eta | Expandable (start open) | `-` | interactive checked |
 | 8 Theta | Not expandable | empty | interactive unchecked |
 
 ## Keyboard mapping
