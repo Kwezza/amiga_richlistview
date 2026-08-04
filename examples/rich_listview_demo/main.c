@@ -24,6 +24,9 @@
  *   - Read-only TEXT_KIND status field under the ListView showing the
  *     latest RLV_EVENT_CELL_CONTROL (GT_SetGadgetAttrs / GTTX_Text).
  *     Policy changes also update this status line.
+ *   - Settings menu selects pending divider / X pad / Y pad / row gap;
+ *     Apply commits them transactionally (recreate + one full paint).
+ *     Apply stays disabled while pending matches applied.
  *
  *   - Optional expandable rows (RLV_ENABLE_EXPANDABLE_ROWS): narrow
  *     disclosure column (+/-), RLV_ROW_EXPANDABLE / EXPANDED flags,
@@ -63,15 +66,21 @@
 long __stack = 80000L;
 
 #define GID_SCROLL 1
-#define GID_GO     2
+#define GID_APPLY  2
 #define GID_BENCH  3
-#define GID_DIVIDER_STYLE 4
-#define GID_PADDING_X     5
-#define GID_PADDING_Y     6
-#define GID_ROW_GAP       7
 #define GID_EVENT_STATUS  8
 #define NUM_COLS   6
 #define DEMO_EVENT_TEXT_LEN 160
+
+/* Settings menu command / value packing (nm_UserData). */
+#define DEMO_MENU_CMD_DIVIDER  1
+#define DEMO_MENU_CMD_XPAD     2
+#define DEMO_MENU_CMD_YPAD     3
+#define DEMO_MENU_CMD_GAP      4
+#define DEMO_MENU_CMD_RESET    5
+#define DEMO_MENU_ID(cmd, val) ((ULONG)(((ULONG)(cmd) << 8) | (ULONG)(val)))
+#define DEMO_MENU_CMD(id)      ((UWORD)(((ULONG)(id) >> 8) & 0xFFUL))
+#define DEMO_MENU_VAL(id)      ((UWORD)((ULONG)(id) & 0xFFUL))
 #ifdef RLV_ENABLE_BENCHMARKS
 #define DEMO_MAX_ROWS 96
 #define RLV_BENCH_NAV_STEPS 50
@@ -104,26 +113,28 @@ long __stack = 80000L;
 
 static LONG g_demo_refresh_depth = 0;
 static BOOL g_demo_gadgets_detached = FALSE;
-static UWORD g_demo_divider_style = (UWORD)RLV_ROW_DIVIDER_SOLID;
-static UWORD g_demo_padding_x = 1;
-static UWORD g_demo_padding_y = 1;
-static UWORD g_demo_row_gap = 0;
+
+/*
+ * Authoritative visual-test settings. Defaults match the pre-menu demo:
+ * dotted dividers, X pad 1, Y pad 2, row gap 1.
+ */
+typedef struct DemoSettings
+{
+    UWORD divider_style;
+    UWORD padding_x;
+    UWORD padding_y;
+    UWORD row_gap;
+} DemoSettings;
+
+static DemoSettings g_demo_applied;
+static DemoSettings g_demo_pending;
+static struct Menu *g_demo_menu_strip = 0;
+static struct Gadget *g_demo_apply_gad = 0;
+
 static UWORD g_demo_activation_policy =
     (UWORD)RLV_CONTROL_ACTIVATE_SELECT_ROW;
 static UWORD g_demo_current_row_visual =
     (UWORD)RLV_CURRENT_ROW_VISUAL_FULL;
-static STRPTR g_demo_divider_labels[] = {
-    "Div: None", "Div: Solid", "Div: Dotted", NULL
-};
-static STRPTR g_demo_padding_x_labels[] = {
-    "X Pad: 0", "X Pad: 1", "X Pad: 2", "X Pad: 3", "X Pad: 4", NULL
-};
-static STRPTR g_demo_padding_y_labels[] = {
-    "Y Pad: 0", "Y Pad: 1", "Y Pad: 2", "Y Pad: 3", "Y Pad: 4", NULL
-};
-static STRPTR g_demo_row_gap_labels[] = {
-    "Gap: 0", "Gap: 1", "Gap: 2", "Gap: 3", "Gap: 4", NULL
-};
 /* Fixed column+divider content width (pixels); set once after font scale. */
 static WORD g_demo_fixed_content_w = 0;
 static WORD g_demo_min_ctrl_w = 0;
@@ -131,7 +142,7 @@ static WORD g_demo_min_ctrl_w = 0;
 /*
  * Cached layout metrics derived from the window interior.
  * Control owns frame/header/viewport insets; demo only places the outer
- * control rectangle, scroller, and controls strip.
+ * control rectangle, scroller, status, and Apply strip.
  */
 typedef struct DemoGeom
 {
@@ -147,31 +158,51 @@ typedef struct DemoGeom
     WORD status_top;
     WORD status_w;
     WORD status_h;
-    WORD go_left;
-    WORD go_top;
-    WORD go_w;
-    WORD go_h;
-    WORD cycle_left;
-    WORD cycle_top;
-    WORD cycle_w;
-    WORD cycle_h;
-    WORD padding_x_left;
-    WORD padding_x_top;
-    WORD padding_x_w;
-    WORD padding_x_h;
-    WORD padding_y_left;
-    WORD padding_y_top;
-    WORD padding_y_w;
-    WORD padding_y_h;
-    WORD row_gap_left;
-    WORD row_gap_top;
-    WORD row_gap_w;
-    WORD row_gap_h;
+    WORD apply_left;
+    WORD apply_top;
+    WORD apply_w;
+    WORD apply_h;
     WORD bench_left;
     WORD bench_top;
     WORD bench_w;
     WORD bench_h;
 } DemoGeom;
+
+/*
+ * NewMenu template for Settings. CHECKIT groups are mutually exclusive
+ * (no MENUTOGGLE so re-selecting the checked item does not clear it).
+ * Checked state is synchronised from g_demo_pending after LayoutMenus.
+ */
+static struct NewMenu g_demo_newmenu[] =
+{
+    { NM_TITLE, "Settings", NULL, 0, 0, NULL },
+    { NM_ITEM,  "Column dividers", NULL, 0, 0, NULL },
+    { NM_SUB,   "None",   NULL, CHECKIT, ~1,  (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_DIVIDER, RLV_ROW_DIVIDER_NONE) },
+    { NM_SUB,   "Solid",  NULL, CHECKIT, ~2,  (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_DIVIDER, RLV_ROW_DIVIDER_SOLID) },
+    { NM_SUB,   "Dotted", NULL, CHECKIT, ~4,  (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_DIVIDER, RLV_ROW_DIVIDER_DOTTED) },
+    { NM_ITEM,  "X padding", NULL, 0, 0, NULL },
+    { NM_SUB,   "0", NULL, CHECKIT, ~1,  (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_XPAD, 0) },
+    { NM_SUB,   "1", NULL, CHECKIT, ~2,  (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_XPAD, 1) },
+    { NM_SUB,   "2", NULL, CHECKIT, ~4,  (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_XPAD, 2) },
+    { NM_SUB,   "3", NULL, CHECKIT, ~8,  (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_XPAD, 3) },
+    { NM_SUB,   "4", NULL, CHECKIT, ~16, (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_XPAD, 4) },
+    { NM_ITEM,  "Y padding", NULL, 0, 0, NULL },
+    { NM_SUB,   "0", NULL, CHECKIT, ~1,  (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_YPAD, 0) },
+    { NM_SUB,   "1", NULL, CHECKIT, ~2,  (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_YPAD, 1) },
+    { NM_SUB,   "2", NULL, CHECKIT, ~4,  (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_YPAD, 2) },
+    { NM_SUB,   "3", NULL, CHECKIT, ~8,  (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_YPAD, 3) },
+    { NM_SUB,   "4", NULL, CHECKIT, ~16, (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_YPAD, 4) },
+    { NM_ITEM,  "Row gap", NULL, 0, 0, NULL },
+    { NM_SUB,   "0", NULL, CHECKIT, ~1,  (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_GAP, 0) },
+    { NM_SUB,   "1", NULL, CHECKIT, ~2,  (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_GAP, 1) },
+    { NM_SUB,   "2", NULL, CHECKIT, ~4,  (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_GAP, 2) },
+    { NM_SUB,   "3", NULL, CHECKIT, ~8,  (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_GAP, 3) },
+    { NM_SUB,   "4", NULL, CHECKIT, ~16, (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_GAP, 4) },
+    { NM_ITEM,  NM_BARLABEL, NULL, 0, 0, NULL },
+    { NM_ITEM,  "Reset to defaults", NULL, 0, 0,
+      (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_RESET, 0) },
+    { NM_END,   NULL, NULL, 0, 0, NULL }
+};
 
 /* Latest outer control box (window-relative); used for click-to-focus. */
 static DemoGeom g_demo_geom;
@@ -197,6 +228,26 @@ static BOOL demo_apply_input(RLV_Control *control,
                              struct Gadget *scroller,
                              const RLV_InputEvent *inev,
                              LONG *last_top);
+static VOID demo_update_status_text(struct Window *win, CONST_STRPTR text);
+static VOID demo_init_default_settings(DemoSettings *out);
+static BOOL demo_settings_equal(const DemoSettings *a,
+                                const DemoSettings *b);
+static VOID demo_copy_settings(DemoSettings *dst,
+                               const DemoSettings *src);
+static VOID demo_sync_menu_checks_from_pending(void);
+static VOID demo_update_apply_enabled_state(struct Window *win);
+static BOOL demo_apply_pending_settings(RLV_Control **control_io,
+                                        RLV_BackendV36 *backend,
+                                        struct Window *win,
+                                        struct Gadget *scroller,
+                                        const RLV_Pens *pens,
+                                        const RLV_Column *columns,
+                                        BOOL keyboard_off,
+                                        LONG *last_top);
+static BOOL demo_setup_menus(APTR vi);
+static VOID demo_cleanup_menus(struct Window *win);
+static BOOL demo_handle_menu_selection(ULONG menu_number,
+                                       struct Window *win);
 #ifdef RLV_ENABLE_BENCHMARKS
 static VOID demo_bench_configure(RLV_Control *control,
                                  struct Window *win,
@@ -572,6 +623,238 @@ static CONST_STRPTR demo_current_row_visual_name(UWORD visual)
     return "FULL";
 }
 
+static VOID demo_init_default_settings(DemoSettings *out)
+{
+    if (out == 0) {
+        return;
+    }
+    out->divider_style = (UWORD)RLV_ROW_DIVIDER_DOTTED;
+    out->padding_x = 1;
+    out->padding_y = 2;
+    out->row_gap = 1;
+}
+
+static BOOL demo_settings_equal(const DemoSettings *a,
+                                const DemoSettings *b)
+{
+    if (a == 0 || b == 0) {
+        return FALSE;
+    }
+    if (a->divider_style != b->divider_style) {
+        return FALSE;
+    }
+    if (a->padding_x != b->padding_x) {
+        return FALSE;
+    }
+    if (a->padding_y != b->padding_y) {
+        return FALSE;
+    }
+    if (a->row_gap != b->row_gap) {
+        return FALSE;
+    }
+    return TRUE;
+}
+
+static VOID demo_copy_settings(DemoSettings *dst,
+                               const DemoSettings *src)
+{
+    if (dst == 0 || src == 0) {
+        return;
+    }
+    dst->divider_style = src->divider_style;
+    dst->padding_x = src->padding_x;
+    dst->padding_y = src->padding_y;
+    dst->row_gap = src->row_gap;
+}
+
+static BOOL demo_menu_item_matches_pending(ULONG item_id,
+                                           const DemoSettings *pending)
+{
+    UWORD cmd;
+    UWORD val;
+
+    if (pending == 0) {
+        return FALSE;
+    }
+    cmd = DEMO_MENU_CMD(item_id);
+    val = DEMO_MENU_VAL(item_id);
+    if (cmd == (UWORD)DEMO_MENU_CMD_DIVIDER) {
+        return (BOOL)(val == pending->divider_style);
+    }
+    if (cmd == (UWORD)DEMO_MENU_CMD_XPAD) {
+        return (BOOL)(val == pending->padding_x);
+    }
+    if (cmd == (UWORD)DEMO_MENU_CMD_YPAD) {
+        return (BOOL)(val == pending->padding_y);
+    }
+    if (cmd == (UWORD)DEMO_MENU_CMD_GAP) {
+        return (BOOL)(val == pending->row_gap);
+    }
+    return FALSE;
+}
+
+static VOID demo_sync_menu_checks_from_pending(void)
+{
+    struct Menu *menu;
+    struct MenuItem *item;
+    struct MenuItem *sub;
+    ULONG item_id;
+
+    if (g_demo_menu_strip == 0) {
+        return;
+    }
+    for (menu = g_demo_menu_strip; menu != 0; menu = menu->NextMenu) {
+        for (item = menu->FirstItem; item != 0; item = item->NextItem) {
+            for (sub = item->SubItem; sub != 0; sub = sub->NextItem) {
+                if ((sub->Flags & CHECKIT) != 0) {
+                    item_id = (ULONG)GTMENUITEM_USERDATA(sub);
+                    if (demo_menu_item_matches_pending(item_id,
+                                                       &g_demo_pending)) {
+                        sub->Flags |= CHECKED;
+                    } else {
+                        sub->Flags &= (UWORD)~CHECKED;
+                    }
+                }
+            }
+            if ((item->Flags & CHECKIT) != 0) {
+                item_id = (ULONG)GTMENUITEM_USERDATA(item);
+                if (demo_menu_item_matches_pending(item_id,
+                                                   &g_demo_pending)) {
+                    item->Flags |= CHECKED;
+                } else {
+                    item->Flags &= (UWORD)~CHECKED;
+                }
+            }
+        }
+    }
+}
+
+/* Must ClearMenuStrip before mutating MenuItem flags on an attached strip. */
+static VOID demo_resync_menu_strip(struct Window *win)
+{
+    if (win != 0 && g_demo_menu_strip != 0) {
+        ClearMenuStrip(win);
+    }
+    demo_sync_menu_checks_from_pending();
+    if (win != 0 && g_demo_menu_strip != 0) {
+        SetMenuStrip(win, g_demo_menu_strip);
+    }
+}
+
+static VOID demo_update_apply_enabled_state(struct Window *win)
+{
+    BOOL dirty;
+
+    dirty = (BOOL)!demo_settings_equal(&g_demo_pending, &g_demo_applied);
+    if (g_demo_apply_gad == 0 || win == 0) {
+        return;
+    }
+    GT_SetGadgetAttrs(g_demo_apply_gad,
+                      win,
+                      NULL,
+                      GA_Disabled, dirty ? FALSE : TRUE,
+                      TAG_DONE);
+}
+
+static BOOL demo_setup_menus(APTR vi)
+{
+    if (vi == 0) {
+        return FALSE;
+    }
+    if (g_demo_menu_strip != 0) {
+        FreeMenus(g_demo_menu_strip);
+        g_demo_menu_strip = 0;
+    }
+    g_demo_menu_strip = CreateMenus(g_demo_newmenu, TAG_END);
+    if (g_demo_menu_strip == 0) {
+        RLV_LOG("FAIL CreateMenus");
+        return FALSE;
+    }
+    /* NewLook tag is V39; ignored on older gadtools, layout still succeeds. */
+    if (!LayoutMenus(g_demo_menu_strip, vi,
+                     GTMN_NewLookMenus, TRUE,
+                     TAG_END)) {
+        RLV_LOG("FAIL LayoutMenus");
+        FreeMenus(g_demo_menu_strip);
+        g_demo_menu_strip = 0;
+        return FALSE;
+    }
+    demo_sync_menu_checks_from_pending();
+    return TRUE;
+}
+
+static VOID demo_cleanup_menus(struct Window *win)
+{
+    if (win != 0 && g_demo_menu_strip != 0) {
+        ClearMenuStrip(win);
+    }
+    if (g_demo_menu_strip != 0) {
+        FreeMenus(g_demo_menu_strip);
+        g_demo_menu_strip = 0;
+    }
+}
+
+static BOOL demo_handle_menu_selection(ULONG menu_number,
+                                       struct Window *win)
+{
+    struct MenuItem *menu_item;
+    ULONG item_id;
+    UWORD cmd;
+    UWORD val;
+    BOOL changed;
+    BOOL dirty;
+
+    changed = FALSE;
+    while (menu_number != MENUNULL) {
+        menu_item = ItemAddress(g_demo_menu_strip, menu_number);
+        if (menu_item == 0) {
+            break;
+        }
+        item_id = (ULONG)GTMENUITEM_USERDATA(menu_item);
+        cmd = DEMO_MENU_CMD(item_id);
+        val = DEMO_MENU_VAL(item_id);
+
+        if (cmd == (UWORD)DEMO_MENU_CMD_DIVIDER) {
+            if (val <= (UWORD)RLV_ROW_DIVIDER_DOTTED
+                && g_demo_pending.divider_style != val) {
+                g_demo_pending.divider_style = val;
+                changed = TRUE;
+            }
+        } else if (cmd == (UWORD)DEMO_MENU_CMD_XPAD) {
+            if (val <= 4 && g_demo_pending.padding_x != val) {
+                g_demo_pending.padding_x = val;
+                changed = TRUE;
+            }
+        } else if (cmd == (UWORD)DEMO_MENU_CMD_YPAD) {
+            if (val <= 4 && g_demo_pending.padding_y != val) {
+                g_demo_pending.padding_y = val;
+                changed = TRUE;
+            }
+        } else if (cmd == (UWORD)DEMO_MENU_CMD_GAP) {
+            if (val <= 4 && g_demo_pending.row_gap != val) {
+                g_demo_pending.row_gap = val;
+                changed = TRUE;
+            }
+        } else if (cmd == (UWORD)DEMO_MENU_CMD_RESET) {
+            demo_init_default_settings(&g_demo_pending);
+            changed = TRUE;
+        }
+
+        menu_number = menu_item->NextSelect;
+    }
+
+    if (changed) {
+        demo_resync_menu_strip(win);
+        demo_update_apply_enabled_state(win);
+        dirty = (BOOL)!demo_settings_equal(&g_demo_pending, &g_demo_applied);
+        if (dirty) {
+            demo_update_status_text(win,
+                                    "Settings changed - select Apply");
+        }
+    }
+    return TRUE;
+}
+
 static VOID demo_update_status_text(struct Window *win, CONST_STRPTR text)
 {
     if (win == 0 || text == 0) {
@@ -716,10 +999,10 @@ static VOID demo_update_event_status(struct Window *win, const RLV_Event *ev)
 }
 
 /*
- * Derive outer control, scroller, status field, and action strip from the
+ * Derive outer control, scroller, status field, and Apply strip from the
  * usable window interior. Control width is at least g_demo_min_ctrl_w
  * (fixed columns); spare horizontal space stays after the last column.
- * Status TEXT_KIND sits between the ListView and the Go/cycle strip.
+ * Status TEXT_KIND sits between the ListView and the Apply button.
  */
 static VOID demo_compute_geom(struct Window *win,
                               WORD font_w,
@@ -751,7 +1034,7 @@ static VOID demo_compute_geom(struct Window *win,
     scroll_w = demo_scroll_width(font_w);
     action_h = (WORD)(font_h + 6);
     status_h = (WORD)(font_h + 6);
-    /* status + pad + action strip below the list. */
+    /* status + pad + Apply strip below the list. */
     strip_h = (WORD)(status_h + DEMO_PAD + action_h);
     min_ctrl_w = g_demo_min_ctrl_w;
     if (min_ctrl_w < 1) {
@@ -766,7 +1049,7 @@ static VOID demo_compute_geom(struct Window *win,
     avail_w = (WORD)(inner_right - inner_left + 1);
     avail_h = (WORD)(inner_bottom - inner_top + 1);
 
-    /* Status + controls strip below the list; gaps DEMO_PAD. */
+    /* Status + Apply strip below the list; gaps DEMO_PAD. */
     avail_h = (WORD)(avail_h - strip_h - DEMO_PAD);
     avail_w = (WORD)(avail_w - scroll_w);
 
@@ -802,52 +1085,17 @@ static VOID demo_compute_geom(struct Window *win,
     out->status_w = (WORD)(ctrl_w + scroll_w);
     out->status_h = status_h;
 
-    out->go_left = inner_left;
-    out->go_top = (WORD)(out->status_top + status_h + DEMO_PAD);
-    out->go_w = (WORD)(font_w * 6);
-    out->go_h = action_h;
-    if (out->go_w < 40) {
-        out->go_w = 40;
-    }
-
-    out->cycle_left = (WORD)(out->go_left + out->go_w + DEMO_PAD);
-    out->cycle_top = out->go_top;
-    out->cycle_w = (WORD)(font_w * 14);
-    out->cycle_h = action_h;
-    if (out->cycle_w < 88) {
-        out->cycle_w = 88;
-    }
-
-    out->padding_x_left =
-        (WORD)(out->cycle_left + out->cycle_w + DEMO_PAD);
-    out->padding_x_top = out->go_top;
-    out->padding_x_w = (WORD)(font_w * 10);
-    out->padding_x_h = action_h;
-    if (out->padding_x_w < 72) {
-        out->padding_x_w = 72;
-    }
-
-    out->padding_y_left =
-        (WORD)(out->padding_x_left + out->padding_x_w + DEMO_PAD);
-    out->padding_y_top = out->go_top;
-    out->padding_y_w = (WORD)(font_w * 10);
-    out->padding_y_h = action_h;
-    if (out->padding_y_w < 72) {
-        out->padding_y_w = 72;
-    }
-
-    out->row_gap_left =
-        (WORD)(out->padding_y_left + out->padding_y_w + DEMO_PAD);
-    out->row_gap_top = out->go_top;
-    out->row_gap_w = (WORD)(font_w * 8);
-    out->row_gap_h = action_h;
-    if (out->row_gap_w < 64) {
-        out->row_gap_w = 64;
+    out->apply_left = inner_left;
+    out->apply_top = (WORD)(out->status_top + status_h + DEMO_PAD);
+    out->apply_w = (WORD)(font_w * 8);
+    out->apply_h = action_h;
+    if (out->apply_w < 56) {
+        out->apply_w = 56;
     }
 
     out->bench_left =
-        (WORD)(out->row_gap_left + out->row_gap_w + DEMO_PAD);
-    out->bench_top = out->go_top;
+        (WORD)(out->apply_left + out->apply_w + DEMO_PAD);
+    out->bench_top = out->apply_top;
     out->bench_w = (WORD)(font_w * 16);
     out->bench_h = action_h;
     if (out->bench_w < 96) {
@@ -898,11 +1146,7 @@ static VOID demo_clear_window_interior(struct Window *win,
  */
 static VOID demo_destroy_gadgets(struct Gadget **glist_io,
                                  struct Gadget **scroller_io,
-                                 struct Gadget **go_io,
-                                 struct Gadget **cycle_io,
-                                 struct Gadget **padding_x_io,
-                                 struct Gadget **padding_y_io,
-                                 struct Gadget **row_gap_io,
+                                 struct Gadget **apply_io,
                                  struct Gadget **bench_io)
 {
     if (glist_io != 0 && *glist_io != 0) {
@@ -910,23 +1154,12 @@ static VOID demo_destroy_gadgets(struct Gadget **glist_io,
         *glist_io = 0;
     }
     g_demo_event_status_gad = 0;
+    g_demo_apply_gad = 0;
     if (scroller_io != 0) {
         *scroller_io = 0;
     }
-    if (go_io != 0) {
-        *go_io = 0;
-    }
-    if (cycle_io != 0) {
-        *cycle_io = 0;
-    }
-    if (padding_x_io != 0) {
-        *padding_x_io = 0;
-    }
-    if (padding_y_io != 0) {
-        *padding_y_io = 0;
-    }
-    if (row_gap_io != 0) {
-        *row_gap_io = 0;
+    if (apply_io != 0) {
+        *apply_io = 0;
     }
     if (bench_io != 0) {
         *bench_io = 0;
@@ -935,11 +1168,7 @@ static VOID demo_destroy_gadgets(struct Gadget **glist_io,
 
 static BOOL demo_create_gadgets(struct Gadget **glist_io,
                                 struct Gadget **scroller_io,
-                                struct Gadget **go_io,
-                                struct Gadget **cycle_io,
-                                struct Gadget **padding_x_io,
-                                struct Gadget **padding_y_io,
-                                struct Gadget **row_gap_io,
+                                struct Gadget **apply_io,
                                 struct Gadget **bench_io,
                                 APTR vi,
                                 struct TextAttr *textattr,
@@ -948,29 +1177,22 @@ static BOOL demo_create_gadgets(struct Gadget **glist_io,
 {
     struct Gadget *gad;
     struct Gadget *scroller;
-    struct Gadget *go;
-    struct Gadget *cycle;
-    struct Gadget *padding_x;
-    struct Gadget *padding_y;
-    struct Gadget *row_gap;
+    struct Gadget *apply;
     struct Gadget *bench;
     struct NewGadget ng;
+    BOOL apply_disabled;
 
-    if (glist_io == 0 || scroller_io == 0 || go_io == 0 || cycle_io == 0
-        || padding_x_io == 0 || padding_y_io == 0 || row_gap_io == 0
+    if (glist_io == 0 || scroller_io == 0 || apply_io == 0
         || bench_io == 0 || vi == 0 || geom == 0) {
         return FALSE;
     }
 
     *glist_io = 0;
     *scroller_io = 0;
-    *go_io = 0;
-    *cycle_io = 0;
-    *padding_x_io = 0;
-    *padding_y_io = 0;
-    *row_gap_io = 0;
+    *apply_io = 0;
     *bench_io = 0;
     g_demo_event_status_gad = 0;
+    g_demo_apply_gad = 0;
 
     gad = CreateContext(glist_io);
     if (gad == 0) {
@@ -998,8 +1220,7 @@ static BOOL demo_create_gadgets(struct Gadget **glist_io,
                                   TAG_END);
     if (gad == 0) {
         RLV_LOG("FAIL CreateGadget SCROLLER_KIND");
-        demo_destroy_gadgets(glist_io, scroller_io, go_io, cycle_io,
-                             padding_x_io, padding_y_io, row_gap_io, bench_io);
+        demo_destroy_gadgets(glist_io, scroller_io, apply_io, bench_io);
         return FALSE;
     }
 
@@ -1017,94 +1238,30 @@ static BOOL demo_create_gadgets(struct Gadget **glist_io,
                        TAG_END);
     if (gad == 0) {
         RLV_LOG("FAIL CreateGadget EVENT_STATUS TEXT_KIND");
-        demo_destroy_gadgets(glist_io, scroller_io, go_io, cycle_io,
-                             padding_x_io, padding_y_io, row_gap_io, bench_io);
+        demo_destroy_gadgets(glist_io, scroller_io, apply_io, bench_io);
         return FALSE;
     }
     g_demo_event_status_gad = gad;
 
-    ng.ng_LeftEdge = geom->go_left;
-    ng.ng_TopEdge = geom->go_top;
-    ng.ng_Width = geom->go_w;
-    ng.ng_Height = geom->go_h;
-    ng.ng_GadgetText = "Go";
-    ng.ng_GadgetID = GID_GO;
+    apply_disabled =
+        (BOOL)demo_settings_equal(&g_demo_pending, &g_demo_applied);
+    ng.ng_LeftEdge = geom->apply_left;
+    ng.ng_TopEdge = geom->apply_top;
+    ng.ng_Width = geom->apply_w;
+    ng.ng_Height = geom->apply_h;
+    ng.ng_GadgetText = "Apply";
+    ng.ng_GadgetID = GID_APPLY;
     ng.ng_Flags = PLACETEXT_IN;
-    go = gad = CreateGadget(BUTTON_KIND, gad, &ng, TAG_END);
+    if (apply_disabled) {
+        ng.ng_Flags |= GFLG_DISABLED;
+    }
+    apply = gad = CreateGadget(BUTTON_KIND, gad, &ng, TAG_END);
     if (gad == 0) {
-        RLV_LOG("FAIL CreateGadget GO BUTTON_KIND");
-        demo_destroy_gadgets(glist_io, scroller_io, go_io, cycle_io,
-                             padding_x_io, padding_y_io, row_gap_io, bench_io);
+        RLV_LOG("FAIL CreateGadget APPLY BUTTON_KIND");
+        demo_destroy_gadgets(glist_io, scroller_io, apply_io, bench_io);
         return FALSE;
     }
-
-    ng.ng_LeftEdge = geom->cycle_left;
-    ng.ng_TopEdge = geom->cycle_top;
-    ng.ng_Width = geom->cycle_w;
-    ng.ng_Height = geom->cycle_h;
-    ng.ng_GadgetText = NULL;
-    ng.ng_GadgetID = GID_DIVIDER_STYLE;
-    ng.ng_Flags = 0;
-    cycle = gad = CreateGadget(CYCLE_KIND, gad, &ng,
-                               GTCY_Labels, (ULONG)g_demo_divider_labels,
-                               GTCY_Active, (ULONG)g_demo_divider_style,
-                               TAG_END);
-    if (gad == 0) {
-        RLV_LOG("FAIL CreateGadget DIVIDER CYCLE_KIND");
-        demo_destroy_gadgets(glist_io, scroller_io, go_io, cycle_io,
-                             padding_x_io, padding_y_io, row_gap_io, bench_io);
-        return FALSE;
-    }
-
-    ng.ng_LeftEdge = geom->padding_x_left;
-    ng.ng_TopEdge = geom->padding_x_top;
-    ng.ng_Width = geom->padding_x_w;
-    ng.ng_Height = geom->padding_x_h;
-    ng.ng_GadgetID = GID_PADDING_X;
-    padding_x = gad = CreateGadget(CYCLE_KIND, gad, &ng,
-                                   GTCY_Labels,
-                                   (ULONG)g_demo_padding_x_labels,
-                                   GTCY_Active, (ULONG)g_demo_padding_x,
-                                   TAG_END);
-    if (gad == 0) {
-        RLV_LOG("FAIL CreateGadget PADDING_X CYCLE_KIND");
-        demo_destroy_gadgets(glist_io, scroller_io, go_io, cycle_io,
-                             padding_x_io, padding_y_io, row_gap_io, bench_io);
-        return FALSE;
-    }
-
-    ng.ng_LeftEdge = geom->padding_y_left;
-    ng.ng_TopEdge = geom->padding_y_top;
-    ng.ng_Width = geom->padding_y_w;
-    ng.ng_Height = geom->padding_y_h;
-    ng.ng_GadgetID = GID_PADDING_Y;
-    padding_y = gad = CreateGadget(CYCLE_KIND, gad, &ng,
-                                   GTCY_Labels,
-                                   (ULONG)g_demo_padding_y_labels,
-                                   GTCY_Active, (ULONG)g_demo_padding_y,
-                                   TAG_END);
-    if (gad == 0) {
-        RLV_LOG("FAIL CreateGadget PADDING_Y CYCLE_KIND");
-        demo_destroy_gadgets(glist_io, scroller_io, go_io, cycle_io,
-                             padding_x_io, padding_y_io, row_gap_io, bench_io);
-        return FALSE;
-    }
-
-    ng.ng_LeftEdge = geom->row_gap_left;
-    ng.ng_TopEdge = geom->row_gap_top;
-    ng.ng_Width = geom->row_gap_w;
-    ng.ng_Height = geom->row_gap_h;
-    ng.ng_GadgetID = GID_ROW_GAP;
-    row_gap = gad = CreateGadget(CYCLE_KIND, gad, &ng,
-                                 GTCY_Labels, (ULONG)g_demo_row_gap_labels,
-                                 GTCY_Active, (ULONG)g_demo_row_gap,
-                                 TAG_END);
-    if (gad == 0) {
-        RLV_LOG("FAIL CreateGadget ROW_GAP CYCLE_KIND");
-        demo_destroy_gadgets(glist_io, scroller_io, go_io, cycle_io,
-                             padding_x_io, padding_y_io, row_gap_io, bench_io);
-        return FALSE;
-    }
+    g_demo_apply_gad = apply;
 
     bench = 0;
 #ifdef RLV_ENABLE_BENCHMARKS
@@ -1119,20 +1276,14 @@ static BOOL demo_create_gadgets(struct Gadget **glist_io,
         bench = gad = CreateGadget(BUTTON_KIND, gad, &ng, TAG_END);
         if (gad == 0) {
             RLV_LOG("FAIL CreateGadget BENCH BUTTON_KIND");
-            demo_destroy_gadgets(glist_io, scroller_io,
-                                 go_io, cycle_io, padding_x_io, padding_y_io,
-                                 row_gap_io, bench_io);
+            demo_destroy_gadgets(glist_io, scroller_io, apply_io, bench_io);
             return FALSE;
         }
     }
 #endif
 
     *scroller_io = scroller;
-    *go_io = go;
-    *cycle_io = cycle;
-    *padding_x_io = padding_x;
-    *padding_y_io = padding_y;
-    *row_gap_io = row_gap;
+    *apply_io = apply;
     *bench_io = bench;
     RLV_LOGF("gadgets created scroller=%dx%d @%d,%d",
              (int)geom->scroll_w, (int)geom->scroll_h,
@@ -1149,11 +1300,7 @@ static BOOL demo_create_gadgets(struct Gadget **glist_io,
 static VOID demo_handle_newsize(struct Window *win,
                                 struct Gadget **glist_io,
                                 struct Gadget **scroller_io,
-                                struct Gadget **go_io,
-                                struct Gadget **cycle_io,
-                                struct Gadget **padding_x_io,
-                                struct Gadget **padding_y_io,
-                                struct Gadget **row_gap_io,
+                                struct Gadget **apply_io,
                                 struct Gadget **bench_io,
                                 APTR vi,
                                 struct TextAttr *textattr,
@@ -1168,9 +1315,7 @@ static VOID demo_handle_newsize(struct Window *win,
 
     RLV_LOG("RESIZE demo_handle_newsize begin");
     if (win == 0 || control == 0 || glist_io == 0
-        || scroller_io == 0 || go_io == 0 || cycle_io == 0
-        || padding_x_io == 0 || padding_y_io == 0 || row_gap_io == 0
-        || bench_io == 0) {
+        || scroller_io == 0 || apply_io == 0 || bench_io == 0) {
         RLV_LOG("RESIZE fallback/failure reason=null_win_or_control");
         return;
     }
@@ -1186,10 +1331,8 @@ static VOID demo_handle_newsize(struct Window *win,
 
     demo_clear_window_interior(win, dri);
 
-    demo_destroy_gadgets(glist_io, scroller_io, go_io, cycle_io,
-                         padding_x_io, padding_y_io, row_gap_io, bench_io);
-    if (!demo_create_gadgets(glist_io, scroller_io, go_io, cycle_io,
-                             padding_x_io, padding_y_io, row_gap_io, bench_io,
+    demo_destroy_gadgets(glist_io, scroller_io, apply_io, bench_io);
+    if (!demo_create_gadgets(glist_io, scroller_io, apply_io, bench_io,
                              vi, textattr, font_h, &geom)) {
         RLV_LOG("RESIZE fallback/failure reason=gadget_recreate");
         g_demo_gadgets_detached = TRUE;
@@ -1273,11 +1416,7 @@ static VOID demo_log_idcmp(struct IntuiMessage *imsg)
         g = (struct Gadget *)iaddr;
         RLV_LOGF("IDCMP gadget GadgetID=%u", (unsigned)g->GadgetID);
         if (g->GadgetID != GID_SCROLL
-            && g->GadgetID != GID_GO
-            && g->GadgetID != GID_DIVIDER_STYLE
-            && g->GadgetID != GID_PADDING_X
-            && g->GadgetID != GID_PADDING_Y
-            && g->GadgetID != GID_ROW_GAP
+            && g->GadgetID != GID_APPLY
             && g->GadgetID != GID_BENCH
             && g->GadgetID != GID_EVENT_STATUS) {
             RLV_LOGF("INVARIANT unexpected GadgetID=%u",
@@ -1939,6 +2078,7 @@ static BOOL demo_recreate_control(RLV_Control **control_io,
                                   const RLV_Pens *pens,
                                   const RLV_Column *columns,
                                   const struct Rectangle *bounds,
+                                  const DemoSettings *settings,
                                   BOOL keyboard_off)
 {
     RLV_Config cfg;
@@ -1949,7 +2089,7 @@ static BOOL demo_recreate_control(RLV_Control **control_io,
     BOOL keyboard_enabled;
 
     if (control_io == 0 || backend == 0 || pens == 0
-        || columns == 0 || bounds == 0) {
+        || columns == 0 || bounds == 0 || settings == 0) {
         return FALSE;
     }
 
@@ -1972,10 +2112,10 @@ static BOOL demo_recreate_control(RLV_Control **control_io,
     cfg.draw_ops = rlv_backend_v36_get_ops();
     cfg.draw_context = rlv_backend_v36_get_context(backend);
     cfg.font = font;
-    cfg.cell_padding_x = g_demo_padding_x;
-    cfg.cell_padding_y = g_demo_padding_y;
-    cfg.row_gap = g_demo_row_gap;
-    cfg.row_divider_style = g_demo_divider_style;
+    cfg.cell_padding_x = settings->padding_x;
+    cfg.cell_padding_y = settings->padding_y;
+    cfg.row_gap = settings->row_gap;
+    cfg.row_divider_style = settings->divider_style;
     if (!keyboard_enabled) {
         cfg.flags = RLV_CFG_NO_KEYBOARD;
     }
@@ -2001,17 +2141,57 @@ static BOOL demo_recreate_control(RLV_Control **control_io,
     return TRUE;
 }
 
+/*
+ * Commit pending visual settings in one recreate + full paint + scroller
+ * sync. Applied settings update only after a successful recreate.
+ */
+static BOOL demo_apply_pending_settings(RLV_Control **control_io,
+                                        RLV_BackendV36 *backend,
+                                        struct Window *win,
+                                        struct Gadget *scroller,
+                                        const RLV_Pens *pens,
+                                        const RLV_Column *columns,
+                                        BOOL keyboard_off,
+                                        LONG *last_top)
+{
+    struct Rectangle bounds;
+
+    if (control_io == 0 || win == 0 || pens == 0 || columns == 0) {
+        return FALSE;
+    }
+    if (demo_settings_equal(&g_demo_pending, &g_demo_applied)) {
+        demo_update_apply_enabled_state(win);
+        return TRUE;
+    }
+
+    demo_bounds_from_geom(&g_demo_geom, &bounds);
+    if (!demo_recreate_control(control_io, backend, win->RPort->Font,
+                               pens, columns, &bounds, &g_demo_pending,
+                               keyboard_off)) {
+        RLV_LOG("FAIL Apply control recreation");
+        return FALSE;
+    }
+
+    demo_copy_settings(&g_demo_applied, &g_demo_pending);
+    demo_paint(*control_io);
+    demo_sync_scroller(win, scroller, *control_io, last_top);
+    demo_update_apply_enabled_state(win);
+    demo_update_status_text(win, "Settings applied");
+    RLV_LOGF("SETTINGS applied div=%u xpad=%u ypad=%u gap=%u",
+             (unsigned)g_demo_applied.divider_style,
+             (unsigned)g_demo_applied.padding_x,
+             (unsigned)g_demo_applied.padding_y,
+             (unsigned)g_demo_applied.row_gap);
+    return TRUE;
+}
+
 int main(int argc, char **argv)
 {
     struct Screen *screen = 0;
     struct Window *win = 0;
     struct Gadget *glist = 0;
     struct Gadget *scroller = 0;
-    struct Gadget *go_gad = 0;
-    struct Gadget *divider_cycle_gad = 0;
-    struct Gadget *padding_x_gad = 0;
-    struct Gadget *padding_y_gad = 0;
-    struct Gadget *row_gap_gad = 0;
+    struct Gadget *apply_gad = 0;
     struct Gadget *bench_gad = 0;
     APTR vi = 0;
     struct DrawInfo *dri = 0;
@@ -2091,6 +2271,9 @@ int main(int argc, char **argv)
     g_demo_bench_mode = run_bench ? TRUE : FALSE;
 #endif
 
+    demo_init_default_settings(&g_demo_applied);
+    demo_copy_settings(&g_demo_pending, &g_demo_applied);
+
     rlv_log_init();
     RLV_LOG("PROGRAM start");
     RLV_LOG("libraries opened via -lauto / runtime OpenLibrary as needed");
@@ -2103,6 +2286,11 @@ int main(int argc, char **argv)
     RLV_LOGF("startup activation_policy=%u visual=%u",
              (unsigned)g_demo_activation_policy,
              (unsigned)g_demo_current_row_visual);
+    RLV_LOGF("startup settings div=%u xpad=%u ypad=%u gap=%u",
+             (unsigned)g_demo_applied.divider_style,
+             (unsigned)g_demo_applied.padding_x,
+             (unsigned)g_demo_applied.padding_y,
+             (unsigned)g_demo_applied.row_gap);
 
     screen = LockPubScreen(NULL);
     if (screen == 0) {
@@ -2139,27 +2327,12 @@ int main(int argc, char **argv)
     g_demo_fixed_content_w = demo_fixed_content_width(columns, NUM_COLS);
     g_demo_min_ctrl_w = demo_min_ctrl_width(g_demo_fixed_content_w);
 
-    gadget_w = (WORD)(font_w * 6);
-    if (gadget_w < 40) {
-        gadget_w = 40;
+    /* Bottom strip needs Apply (+ optional Bench); columns still dominate. */
+    gadget_w = (WORD)(font_w * 8);
+    if (gadget_w < 56) {
+        gadget_w = 56;
     }
     action_w = gadget_w;
-    gadget_w = (WORD)(font_w * 14);
-    if (gadget_w < 88) {
-        gadget_w = 88;
-    }
-    action_w = (WORD)(action_w + DEMO_PAD + gadget_w);
-    gadget_w = (WORD)(font_w * 10);
-    if (gadget_w < 72) {
-        gadget_w = 72;
-    }
-    action_w = (WORD)(action_w + DEMO_PAD + gadget_w);
-    action_w = (WORD)(action_w + DEMO_PAD + gadget_w);
-    gadget_w = (WORD)(font_w * 8);
-    if (gadget_w < 64) {
-        gadget_w = 64;
-    }
-    action_w = (WORD)(action_w + DEMO_PAD + gadget_w);
 #ifdef RLV_ENABLE_BENCHMARKS
     if (g_demo_bench_mode) {
         gadget_w = (WORD)(font_w * 16);
@@ -2175,7 +2348,7 @@ int main(int argc, char **argv)
 
     /*
      * Initial outer window size from fixed column total + frame + scroller +
-     * controls strip. WA_MinWidth uses the same horizontal requirement.
+     * status/Apply strip. WA_MinWidth uses the same horizontal requirement.
      */
     init_w = (WORD)(border_left + DEMO_PAD + g_demo_min_ctrl_w
                     + demo_scroll_width(font_w) + DEMO_PAD + border_right);
@@ -2205,6 +2378,15 @@ int main(int argc, char **argv)
     }
     RLV_LOG("draw info acquired");
 
+    if (!demo_setup_menus(vi)) {
+        RLV_LOG("FAIL demo_setup_menus");
+        FreeScreenDrawInfo(screen, dri);
+        FreeVisualInfo(vi);
+        UnlockPubScreen(NULL, screen);
+        rlv_log_shutdown();
+        return 20;
+    }
+
     demo_init_rows();
 
     /*
@@ -2224,57 +2406,24 @@ int main(int argc, char **argv)
     geom.status_top = (WORD)(geom.ctrl_top + geom.ctrl_h + DEMO_PAD);
     geom.status_w = (WORD)(geom.ctrl_w + geom.scroll_w);
     geom.status_h = (WORD)(font_h + 6);
-    geom.go_left = geom.ctrl_left;
-    geom.go_top = (WORD)(geom.status_top + geom.status_h + DEMO_PAD);
-    geom.go_w = (WORD)(font_w * 6);
-    if (geom.go_w < 40) {
-        geom.go_w = 40;
+    geom.apply_left = geom.ctrl_left;
+    geom.apply_top = (WORD)(geom.status_top + geom.status_h + DEMO_PAD);
+    geom.apply_w = (WORD)(font_w * 8);
+    if (geom.apply_w < 56) {
+        geom.apply_w = 56;
     }
-    geom.go_h = (WORD)(font_h + 6);
-    geom.cycle_left = (WORD)(geom.go_left + geom.go_w + DEMO_PAD);
-    geom.cycle_top = geom.go_top;
-    geom.cycle_w = (WORD)(font_w * 14);
-    if (geom.cycle_w < 88) {
-        geom.cycle_w = 88;
-    }
-    geom.cycle_h = geom.go_h;
-    geom.padding_x_left =
-        (WORD)(geom.cycle_left + geom.cycle_w + DEMO_PAD);
-    geom.padding_x_top = geom.go_top;
-    geom.padding_x_w = (WORD)(font_w * 10);
-    if (geom.padding_x_w < 72) {
-        geom.padding_x_w = 72;
-    }
-    geom.padding_x_h = geom.go_h;
-    geom.padding_y_left =
-        (WORD)(geom.padding_x_left + geom.padding_x_w + DEMO_PAD);
-    geom.padding_y_top = geom.go_top;
-    geom.padding_y_w = (WORD)(font_w * 10);
-    if (geom.padding_y_w < 72) {
-        geom.padding_y_w = 72;
-    }
-    geom.padding_y_h = geom.go_h;
-    geom.row_gap_left =
-        (WORD)(geom.padding_y_left + geom.padding_y_w + DEMO_PAD);
-    geom.row_gap_top = geom.go_top;
-    geom.row_gap_w = (WORD)(font_w * 8);
-    if (geom.row_gap_w < 64) {
-        geom.row_gap_w = 64;
-    }
-    geom.row_gap_h = geom.go_h;
+    geom.apply_h = (WORD)(font_h + 6);
     geom.bench_left =
-        (WORD)(geom.row_gap_left + geom.row_gap_w + DEMO_PAD);
-    geom.bench_top = geom.go_top;
+        (WORD)(geom.apply_left + geom.apply_w + DEMO_PAD);
+    geom.bench_top = geom.apply_top;
     geom.bench_w = (WORD)(font_w * 16);
     if (geom.bench_w < 96) {
         geom.bench_w = 96;
     }
-    geom.bench_h = geom.go_h;
+    geom.bench_h = geom.apply_h;
 
     if (!demo_create_gadgets(&glist, &scroller,
-                             &go_gad, &divider_cycle_gad,
-                             &padding_x_gad, &padding_y_gad, &row_gap_gad,
-                             &bench_gad,
+                             &apply_gad, &bench_gad,
                              vi, screen->Font, font_h, &geom)) {
         goto fail;
     }
@@ -2288,6 +2437,7 @@ int main(int argc, char **argv)
                   | IDCMP_NEWSIZE
                   | IDCMP_SIZEVERIFY
                   | IDCMP_RAWKEY
+                  | IDCMP_MENUPICK
                   | SCROLLERIDCMP
                   | DEMO_IDCMP_EXTRA;
 
@@ -2309,6 +2459,7 @@ int main(int argc, char **argv)
                          WA_SizeBBottom, TRUE,
                          WA_Activate, TRUE,
                          WA_SimpleRefresh, TRUE,
+                         WA_NewLookMenus, TRUE,
                          WA_PubScreen, (ULONG)screen,
                          TAG_END);
     if (win == 0) {
@@ -2316,6 +2467,8 @@ int main(int argc, char **argv)
         goto fail_gadgets;
     }
     RLV_LOG("window opened");
+
+    SetMenuStrip(win, g_demo_menu_strip);
 
     /*
      * Recompute WA_MinWidth from actual borders (size gadget widens
@@ -2339,14 +2492,9 @@ int main(int argc, char **argv)
     demo_compute_geom(win, font_w, font_h, &geom);
     g_demo_geom = geom;
     RemoveGList(win, glist, -1);
-    demo_destroy_gadgets(&glist, &scroller,
-                         &go_gad, &divider_cycle_gad,
-                         &padding_x_gad, &padding_y_gad, &row_gap_gad,
-                         &bench_gad);
+    demo_destroy_gadgets(&glist, &scroller, &apply_gad, &bench_gad);
     if (!demo_create_gadgets(&glist, &scroller,
-                             &go_gad, &divider_cycle_gad,
-                             &padding_x_gad, &padding_y_gad, &row_gap_gad,
-                             &bench_gad,
+                             &apply_gad, &bench_gad,
                              vi, screen->Font, font_h, &geom)) {
         RLV_LOG("FAIL post-open gadget recreate");
         goto fail_window;
@@ -2364,10 +2512,10 @@ int main(int argc, char **argv)
     cfg.draw_ops = rlv_backend_v36_get_ops();
     cfg.draw_context = rlv_backend_v36_get_context(backend);
     cfg.font = win->RPort->Font;
-    cfg.cell_padding_x = g_demo_padding_x;
-    cfg.cell_padding_y = g_demo_padding_y;
-    cfg.row_gap = g_demo_row_gap;
-    cfg.row_divider_style = g_demo_divider_style;
+    cfg.cell_padding_x = g_demo_applied.padding_x;
+    cfg.cell_padding_y = g_demo_applied.padding_y;
+    cfg.row_gap = g_demo_applied.row_gap;
+    cfg.row_divider_style = g_demo_applied.divider_style;
     cfg.flags = 0;
 
     control = rlv_create(&cfg);
@@ -2408,6 +2556,7 @@ int main(int argc, char **argv)
     printf("Return activates selection; Space toggles sole checkbox. Click control for focus.\n");
     printf("A = toggle activation policy (SELECT_ROW / KEEP_CURRENT).\n");
     printf("V = cycle current-row visual (FULL / MARKER / NONE).\n");
+    printf("Settings menu selects pending divider/padding/gap; Apply commits.\n");
     printf("Row 3 (-- Category --) is non-selectable; Delta/Theta have empty disclosure cells.\n");
     printf("Activation=%s  Visual=%s\n",
            demo_activation_policy_name(g_demo_activation_policy),
@@ -2476,6 +2625,8 @@ int main(int argc, char **argv)
 
             if (class == IDCMP_CLOSEWINDOW) {
                 done = TRUE;
+            } else if (class == IDCMP_MENUPICK) {
+                (VOID)demo_handle_menu_selection((ULONG)code, win);
             } else if (class == IDCMP_REFRESHWINDOW) {
                 RLV_LOG("refresh message received");
                 if (g_demo_refresh_depth != 0) {
@@ -2498,12 +2649,6 @@ int main(int argc, char **argv)
             } else if (class == IDCMP_MOUSEBUTTONS) {
                 if ((code & IECODE_UP_PREFIX) == 0
                     && (code & ~IECODE_UP_PREFIX) == IECODE_LBUTTON) {
-                    /*
-                     * Click-to-focus: pointer inside this control's outer
-                     * box transfers active_control (even on gap / heading).
-                     * Outside all controls: preserve active. Dual-control
-                     * demos would test each instance here.
-                     */
                     if (demo_point_in_control(&g_demo_geom, mx, my)) {
                         active_control = control;
                         memset(&inev, 0, sizeof(inev));
@@ -2516,11 +2661,6 @@ int main(int argc, char **argv)
                     }
                 } else if ((code & IECODE_UP_PREFIX) != 0
                            && (code & ~IECODE_UP_PREFIX) == IECODE_LBUTTON) {
-                    /*
-                     * Verified-up commit / cancel. Deliver SELECT_UP to the
-                     * active control even when the pointer left the box
-                     * (release-outside cancels arm).
-                     */
                     if (active_control != 0) {
                         memset(&inev, 0, sizeof(inev));
                         inev.type = (UWORD)RLV_INPUT_SELECT_UP;
@@ -2568,38 +2708,12 @@ int main(int argc, char **argv)
                                      &last_scroll_top);
                 }
             } else if (class == IDCMP_GADGETUP && g != 0) {
-                if (g->GadgetID == GID_GO) {
-                    demo_bounds_from_geom(&g_demo_geom, &bounds);
-                    if (demo_recreate_control(
-                            &control, backend, win->RPort->Font,
-                            &pens, columns, &bounds, keyboard_off)) {
+                if (g->GadgetID == GID_APPLY) {
+                    if (demo_apply_pending_settings(
+                            &control, backend, win, scroller,
+                            &pens, columns, keyboard_off,
+                            &last_scroll_top)) {
                         active_control = control;
-                        demo_paint(control);
-                        demo_sync_scroller(win, scroller, control,
-                                           &last_scroll_top);
-                    } else {
-                        RLV_LOG("FAIL Go control recreation");
-                    }
-                } else if (g->GadgetID == GID_DIVIDER_STYLE) {
-                    /*
-                     * GadTools reports the new CYCLE_KIND selection in
-                     * IntuiMessage.Code. Querying GTCY_Active here can return
-                     * the previous value.
-                     */
-                    if (code <= (UWORD)RLV_ROW_DIVIDER_DOTTED) {
-                        g_demo_divider_style = code;
-                    }
-                } else if (g->GadgetID == GID_PADDING_X) {
-                    if (code <= 4) {
-                        g_demo_padding_x = code;
-                    }
-                } else if (g->GadgetID == GID_PADDING_Y) {
-                    if (code <= 4) {
-                        g_demo_padding_y = code;
-                    }
-                } else if (g->GadgetID == GID_ROW_GAP) {
-                    if (code <= 4) {
-                        g_demo_row_gap = code;
                     }
 #ifdef RLV_ENABLE_BENCHMARKS
                 } else if (g->GadgetID == GID_BENCH) {
@@ -2624,13 +2738,10 @@ int main(int argc, char **argv)
                     g_demo_gadgets_detached = TRUE;
                 }
                 demo_handle_newsize(win, &glist, &scroller,
-                                    &go_gad, &divider_cycle_gad,
-                                    &padding_x_gad, &padding_y_gad,
-                                    &row_gap_gad, &bench_gad,
+                                    &apply_gad, &bench_gad,
                                     vi, screen->Font, dri,
                                     control, font_w, font_h,
                                     &last_scroll_top);
-                /* Refresh cached focus hit box after resize. */
                 demo_compute_geom(win, font_w, font_h, &g_demo_geom);
             } else if (class == IDCMP_INTUITICKS) {
                 /* Logged in demo_log_idcmp; no action. */
@@ -2646,6 +2757,7 @@ int main(int argc, char **argv)
     backend = 0;
 
     RLV_LOG("window closed");
+    demo_cleanup_menus(win);
     CloseWindow(win);
     win = 0;
     FreeGadgets(glist);
@@ -2670,6 +2782,7 @@ fail_backend:
 fail_window:
     RLV_LOG("cleanup fail_window");
     if (win != 0) {
+        demo_cleanup_menus(win);
         CloseWindow(win);
         win = 0;
     }
@@ -2681,6 +2794,7 @@ fail_gadgets:
     }
 fail:
     RLV_LOG("cleanup fail");
+    demo_cleanup_menus(0);
     if (dri != 0) {
         FreeScreenDrawInfo(screen, dri);
     }
@@ -2691,3 +2805,4 @@ fail:
     rlv_log_shutdown();
     return exit_code;
 }
+

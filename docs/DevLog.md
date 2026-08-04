@@ -1,5 +1,16 @@
 # RichListview — Dev Log
 
+## 2026-08-04 — Demo Settings menu + Apply workflow
+
+Moved divider / X pad / Y pad / row-gap visual test controls from bottom-row
+cycle gadgets into a **Settings** menu with pending vs applied state.
+**Apply** commits all pending values in one recreate + full paint + scroller
+sync and stays disabled while pending matches applied. **Reset to defaults**
+updates pending only. Startup defaults unchanged (dotted, X=1, Y=2, gap=1).
+
+**Build:** `make rich-listview-demo` OK (`bin/rich-listview-demo` 54676 bytes;
+was 54156). Not run under emulation in this session.
+
 ## 2026-07-31 — Expandable / collapsible rows
 
 Implemented explicit per-row disclosure for RichListview: `+/-` custom cell
@@ -18,20 +29,14 @@ checkbox, selection, and current-row visual state.
 **Build:** `make rich-listview-demo` clean rebuild OK (demo ~52 KB; expand+disclosure
 objects ~6 KB). Not run under emulation in this session.
 
-**Follow-up fixes (same session)**
-- Demo font-scaling overwrote disclosure column 0 with Name's `10 * font_w`;
-  remapped to `2 * font_w` disclosure + correct Name..On column indices.
-- Disclosure `+/-` suppressed when wrap cache is a single line (e.g. Zeta) so
-  expand is not a visual no-op; `RLV_ROW_EXPANDABLE` may still be set.
-- `rlv_render_from_row` — disclosure toggles paint from the changed row
-  downward when scroll is unchanged (was full viewport; visible flash on 7 MHz).
-- Expand/collapse may `ScrollRaster` content below the toggled row (reuse
-  smart-scroll blit) and repaint only the row + exposed band; Alpha-at-top no
-  longer forces a full viewport redraw when the blit succeeds.
-- Collapse blit started at the *old* row bottom, so the freed strip kept the
-  tall selection fill and bled into the next row (selected Beta → Gamma).
-  Fixed: shift origin is `screen_top + min(old_h, new_h)` so collapse
-  overwrites that strip. Rebuild OK.
+**Session fixes**
+- Disclosure column width: demo font-scaling remapped col 0 to `2 * font_w`
+  (was overwriting with Name width).
+- Single-line expandable rows (e.g. Zeta): suppress `+/-` when wrap is one line.
+- Faster expand/collapse paint: `rlv_render_from_row` + smart-scroll
+  `ScrollRaster` of content below the toggled row (row + exposed band only).
+- Selection bleed on collapse: blit split at `min(old_h, new_h)` so the freed
+  strip is overwritten (selected Beta no longer paints into Gamma).
 
 **Report:** `docs/RICHLISTVIEW_EXPANDABLE_ROWS_IMPLEMENTATION_REPORT.md`
 

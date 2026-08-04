@@ -7,8 +7,10 @@
 - Body cells retain dark-right/shine-left vertical edges
 - Configurable data-row dividers: none, solid, or one-on/one-off dotted
 - Shared title/body horizontal and vertical cell padding
-- Cycle gadgets select pending divider, X/Y padding, and row-gap values;
-  `Go` transactionally recreates and repaints the control
+- **Settings** menu selects pending divider, X/Y padding, and row-gap
+  values (same presets as the former cycle gadgets); **Apply** commits
+  them in one recreate + full repaint. Apply stays disabled while pending
+  matches the settings currently on the ListView
 - One-pixel `SHADOWPEN` outer outline
 - Manually drawn viewport (no GadTools `LISTVIEW_KIND`)
 - Variable-height logical rows with pixel-measured word wrapping
@@ -282,7 +284,7 @@ cross-link proves the Amiga executable was built; only an Amiga/WinUAE run
 validates `ReadEClock()` timings and the rendered workload.
 
 Initial outer window size follows the normal demo open formula (borders +
-pad + fixed columns + scroller + controls strip; height ≈
+pad + fixed columns + scroller + status/Apply strip; height ≈
 `(font_h+2)*16` for the control body).
 
 API: `rlv_set_keyboard_enabled` / `get_keyboard_enabled`, or create
@@ -298,11 +300,18 @@ Cell spacing and data-row divider API:
 - Set `RLV_Config.row_divider_style` to
   `RLV_ROW_DIVIDER_NONE`, `RLV_ROW_DIVIDER_SOLID`, or
   `RLV_ROW_DIVIDER_DOTTED`.
-- The demo starts with X padding `1`, Y padding `1`, row gap `0`, and a
-  `SOLID` divider. Each numeric cycle offers `0` through `4` pixels.
-- Every cycle stores `IntuiMessage.Code` as its pending selection. Pressing
-  `Go` creates a fully configured replacement before destroying the old
-  control, retaining selection, scroll position, and keyboard state.
+- Demo startup defaults (unchanged from the pre-menu demo): X padding `1`,
+  Y padding `2`, row gap `1`, and a `DOTTED` divider. Menu presets for
+  numeric settings are `0` through `4` pixels; dividers are None / Solid /
+  Dotted.
+- Menu selections update **pending** settings only (checkmarks track
+  pending). The ListView is not relayouted until **Apply**.
+- **Apply** is enabled only while pending differs from applied. It creates
+  a fully configured replacement control before destroying the old one,
+  retaining selection, scroll position, and keyboard state, then disables
+  itself.
+- **Reset to defaults** (Settings menu) restores the startup defaults into
+  pending settings and still requires Apply; it does not apply immediately.
 - `rlv_set_cell_padding()` and `rlv_set_row_gap()` invalidate
   layout; callers must relayout and repaint. Corresponding getters expose
   the current values.
@@ -426,7 +435,7 @@ Manual checklist (code-path locked; Amiga/emulator when available):
 - [ ] Jump / large scroll: full viewport fallback; marks match snapshot
 - [ ] Selection that triggers `make_visible`: full viewport; no stale highlight or ticks
 - [ ] Narrow resize rewrap: checkbox stays on first-line band (not mid-row)
-- [ ] Arm then resize / `Go` relayout: arm cancelled; no spurious toggle
+- [ ] Arm then resize / Apply relayout: arm cancelled; no spurious toggle
 - [ ] Smart-scroll-off twin: same visual correctness (full viewport each scroll)
 - [ ] Short scroll over checked rows: ticks stay complete (no half-tick /
       remnant sliver after smart-scroll band paint; 2026-07-30 diagonal soft-clip fix)
@@ -476,7 +485,7 @@ Emulator / Amiga integration checklist:
 - [ ] Display-only (Delta) / disabled (Zeta): click does not toggle
 - [ ] Space on interactive row: toggle + store sync; Space on Delta/Zeta: none
 - [ ] Return: `Activated …` only
-- [ ] After toggle, `Go` recreate keeps the synced Boolean (store → set_rows)
+- [ ] After toggle, Apply recreate keeps the synced Boolean (store → set_rows)
 - [ ] Docs: integrator can follow without private headers; cellctl marked legacy
 
 ### Phase C9 size / regression (2026-07-30)
@@ -611,15 +620,21 @@ Validated on Workbench 2.x and Workbench 3.2 (Phase 5 Task 1):
 
 ## Appearance controls visual checklist
 
-Requires a fresh Amiga/WinUAE run after the appearance-control change:
+Requires a fresh Amiga/WinUAE run after the Settings-menu workflow change:
 
-- [ ] Cycling any setting changes its displayed choice without repainting
-- [ ] `Go` recreates the control and applies all four displayed choices
+- [ ] Settings menu opens; each group has exactly one checked item at startup
+- [ ] Apply starts disabled; no cycle gadgets remain in the window
+- [ ] Changing a menu setting enables Apply without ListView redraw
+- [ ] Returning pending values to the applied set disables Apply again
+- [ ] Re-selecting the already-checked item leaves Apply disabled
+- [ ] Reset to defaults updates checks only; Apply enables only if applied
+      settings differ from defaults
+- [ ] Apply recreates the control and applies all pending choices together
 - [ ] X padding changes title/body horizontal inset and wrapping together
 - [ ] Y padding changes title/body vertical inset and row/header height together
 - [ ] Row gap adds only the requested space between logical body rows
-- [ ] Selection, scroll position, and keyboard state survive `Go`
-- [ ] Header/title rendering is identical in all three modes
+- [ ] Selection, scroll position, and keyboard state survive Apply
+- [ ] Header/title rendering is identical in all three divider modes
 - [ ] `NONE` draws no horizontal line between data rows
 - [ ] `SOLID` draws one continuous dark line between data rows
 - [ ] `DOTTED` draws a one-on/one-off dark line between data rows
@@ -629,8 +644,8 @@ Requires a fresh Amiga/WinUAE run after the appearance-control change:
 - [ ] Extended column edges remain inside the outer black outline
 - [ ] Body dark-right/shine-left vertical edges remain intact
 - [ ] Outer control outline is one dark pixel on all four sides
-- [ ] Demo rows have no extra vertical gap
 - [ ] Selection, wrapped rows, scrolling, refresh, and resize remain correct
+- [ ] Status line still reports cell-control events after Apply
 
 ## Keyboard / EXERCISE checklist (Phase 5.5)
 
