@@ -244,6 +244,9 @@ VOID rlv_destroy(RLV_Control *control)
 #if defined(RLV_ENABLE_EXPANDABLE_ROWS) && (RLV_ENABLE_EXPANDABLE_ROWS != 0)
     rlv_free_row_expand(control);
 #endif
+#if defined(RLV_ENABLE_SORTING) && (RLV_ENABLE_SORTING != 0)
+    rlv_sort_free_maps(control);
+#endif
     rlv_platform_free(control);
 }
 
@@ -285,6 +288,21 @@ BOOL rlv_set_rows(RLV_Control *c,
     }
     c->rows = rows;
     c->row_count = count;
+    if (count > 0 && rows != 0) {
+        ULONG tagged;
+        ULONG i;
+
+        tagged = 0;
+        for (i = 0; i < count; i++) {
+            if (rows[i].user_data != 0) {
+                tagged++;
+            }
+        }
+        RLV_LOGF("LAYOUT set_rows count=%lu tagged=%lu",
+                 (unsigned long)count, (unsigned long)tagged);
+    } else {
+        RLV_LOG("LAYOUT set_rows count=0");
+    }
     if (!rlv_refresh_cell_snapshot(c)) {
         rlv_layout_invalidate(c);
         return FALSE;
@@ -294,6 +312,9 @@ BOOL rlv_set_rows(RLV_Control *c,
         rlv_layout_invalidate(c);
         return FALSE;
     }
+#endif
+#if defined(RLV_ENABLE_SORTING) && (RLV_ENABLE_SORTING != 0)
+    rlv_sort_on_rows_replaced(c);
 #endif
     rlv_layout_invalidate(c);
     return TRUE;
@@ -379,6 +400,58 @@ BOOL rlv_is_row_expanded(const RLV_Control *c, LONG row)
     return FALSE;
 }
 #endif /* !RLV_ENABLE_EXPANDABLE_ROWS */
+
+#if !defined(RLV_ENABLE_SORTING) || (RLV_ENABLE_SORTING == 0)
+BOOL rlv_set_sort_specs(RLV_Control *c,
+                        const RLV_SortSpec *specs,
+                        UWORD count)
+{
+    (void)c;
+    (void)specs;
+    (void)count;
+    return FALSE;
+}
+
+BOOL rlv_sort(RLV_Control *c, UWORD column, UWORD direction)
+{
+    (void)c;
+    (void)column;
+    (void)direction;
+    return FALSE;
+}
+
+BOOL rlv_get_sort_state(const RLV_Control *c,
+                        UWORD *column_out,
+                        UWORD *direction_out)
+{
+    (void)c;
+    (void)column_out;
+    (void)direction_out;
+    return FALSE;
+}
+
+BOOL rlv_clear_sort(RLV_Control *c)
+{
+    (void)c;
+    return FALSE;
+}
+
+LONG rlv_source_row_of(const RLV_Control *c, LONG view_row)
+{
+    if (c == 0 || view_row < 0 || (ULONG)view_row >= c->row_count) {
+        return -1;
+    }
+    return view_row;
+}
+
+LONG rlv_view_row_of(const RLV_Control *c, LONG source_row)
+{
+    if (c == 0 || source_row < 0 || (ULONG)source_row >= c->row_count) {
+        return -1;
+    }
+    return source_row;
+}
+#endif /* !RLV_ENABLE_SORTING */
 
 VOID rlv_set_cell_padding(RLV_Control *c, UWORD x, UWORD y)
 {

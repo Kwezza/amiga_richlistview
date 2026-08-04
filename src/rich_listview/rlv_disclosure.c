@@ -123,9 +123,17 @@ BOOL rlv_disclosure_resolve_rect(const RLV_Control *c,
         line_h = 1;
     }
 
-    row_top = (WORD)(c->viewport_bounds.MinY
-                     + c->layout_rows[logical_row].top_y
-                     - c->scroll_y);
+    {
+        LONG view;
+
+        view = rlv_view_for_source(c, logical_row);
+        if (view < 0 || (ULONG)view >= c->row_count) {
+            return FALSE;
+        }
+        row_top = (WORD)(c->viewport_bounds.MinY
+                         + c->layout_rows[view].top_y
+                         - c->scroll_y);
+    }
     band_top = (WORD)(row_top + (WORD)c->cell_padding_y);
     band_bottom = (WORD)(band_top + line_h - 1);
     band_h = (WORD)(band_bottom - band_top + 1);

@@ -19,11 +19,12 @@
  *     current row. Space → RLV_INPUT_TOGGLE; Return → NAV_ACTIVATE only.
  *     Keys A / V cycle activation policy and current-row visual.
  *     Interactive / display-only / disabled rows. App owns authoritative
- *     Booleans (user_data); on CELL_CONTROL sync the store then
- *     rlv_render_cell_control (row fallback when needed).
+ *     Booleans; each RLV_Row.user_data holds a stable numeric row tag.
+ *     On CELL_CONTROL the demo finds the store by tag, syncs the Boolean,
+ *     then rlv_render_cell_control (row fallback when needed).
  *   - Read-only TEXT_KIND status field under the ListView showing the
- *     latest RLV_EVENT_CELL_CONTROL (GT_SetGadgetAttrs / GTTX_Text).
- *     Policy changes also update this status line.
+ *     latest row-related event with logical index and tag (selection,
+ *     activation, CELL_CONTROL). Policy changes also update this status.
  *   - Settings menu selects pending divider / X pad / Y pad / row gap /
  *     row-display / long-word / ellipsis policies; Apply commits them
  *     transactionally (recreate + one full paint). Apply stays disabled
@@ -36,8 +37,15 @@
  *     DISCLOSURE + EXPANDED/COLLAPSED; app syncs row flags then
  *     rlv_render_from_row (shift-blit or tail paint when scroll unchanged).
  *
+ *   - Optional sorting (RLV_ENABLE_SORTING / make rich-listview-demo-sort):
+ *     click sortable headers to sort; triangle indicator; Name nocase,
+ *     Date via CUSTOM DateStamp (context), Pos unsigned, On boolean.
+ *     Fixed heading is a top sort barrier. Status line shows
+ *     sort + view/source/tag. Logging twin: rich-listview-demo-sort-log.
+ *
  * Required modules: rlv_*.o (incl. wrap + checkbox + expand/disclosure),
  *                   rlv_backend_amiga_v36.o, rlv_platform.o
+ * Sorting build also links rlv_sort.o.
  * Deliberately excluded: clv_renderer_*.o, clv_selection.o, clv_pixel_wrap.o,
  *                        ASCII formatters, clv_cellctl_* (legacy GadTools path)
  *
@@ -60,6 +68,7 @@
 #include <proto/gadtools.h>
 #include <proto/graphics.h>
 #include <proto/dos.h>
+#include <libraries/dos.h>
 
 #include <stdio.h>
 #include <string.h>
@@ -297,12 +306,17 @@ static VOID demo_run_benchmarks(RLV_Control *control,
 #endif
 
 static const RLV_Column g_columns[NUM_COLS] = {
-    /* Disclosure first; Name wraps; Type truncates; Description wraps;
-     * Status uses WORD so Long-words policy is testable; On = checkbox. */
+    /* Disclosure first; Name wraps; Type/Date truncates; Description wraps;
+     * Status uses WORD so Long-words policy is testable; On = checkbox.
+     * Sorting builds retitle Type→Date and Status→Pos at install time. */
     { "",            2 * 8, RLV_CELL_ALIGN_CENTER, RLV_WRAP_NONE,
       RLV_COL_TYPE_DISCLOSURE },
     { "Name",        10 * 8, RLV_CELL_ALIGN_LEFT,   RLV_WRAP_WORD_OR_CHAR, 0 },
+#if defined(RLV_ENABLE_SORTING) && (RLV_ENABLE_SORTING != 0)
+    { "Date",        11 * 8, RLV_CELL_ALIGN_LEFT,   RLV_WRAP_NONE, 0 },
+#else
     { "Type",         8 * 8, RLV_CELL_ALIGN_LEFT,   RLV_WRAP_NONE, 0 },
+#endif
     { "Description", 18 * 8, RLV_CELL_ALIGN_LEFT,   RLV_WRAP_WORD_OR_CHAR, 0 },
     { "Status",       6 * 8, RLV_CELL_ALIGN_LEFT,   RLV_WRAP_WORD, 0 },
     { "On",           3 * 8, RLV_CELL_ALIGN_CENTER, RLV_WRAP_NONE,
@@ -354,9 +368,9 @@ static const char *g_row7[NUM_COLS] = {
 };
 static const char *g_row8[NUM_COLS] = {
     "",
-    "Theta",
+    "Alpha", /* duplicate Name vs row 0 — distinct tag proves identity */
     "VeryLongUnbrokenTypeToken",
-    "Short",
+    "Same visible Name as row 0; identify via row tag, not text",
     "Truncated", ""
 };
 
@@ -364,12 +378,14 @@ static const char *g_row8[NUM_COLS] = {
  * App-owned authoritative checkbox store (column DEMO_CB_COL = On).
  * Disclosure interactivity lives in the same control_cells row vectors.
  * set_rows borrows these descriptors and copies into the control snapshot;
- * the control never writes back. On CELL_CONTROL the demo syncs the store
- * via row user_data (pointer to the On-cell value UBYTE) for checkboxes,
- * or RLV_Row.flags for disclosure expand/collapse.
+ * the control never writes back. Each RLV_Row.user_data holds a stable
+ * numeric tag (DEMO_TAG_BASE + i). On CELL_CONTROL the demo syncs the
+ * On Boolean by scanning for that tag (not by visible text). Disclosure
+ * expand/collapse still syncs RLV_Row.flags via the event row index.
  */
 #define DEMO_DISC_COL  0
 #define DEMO_CB_COL    5
+#define DEMO_TAG_BASE  1000UL
 #define DEMO_CB_ON \
     (UBYTE)(RLV_CELL_F_VISIBLE | RLV_CELL_F_ENABLED \
             | RLV_CELL_F_INTERACTIVE)
@@ -450,6 +466,32 @@ static VOID demo_init_rows(void)
     inits[7] = g_ctrl_init7;
     inits[8] = g_ctrl_init8;
 
+#if defined(RLV_ENABLE_SORTING) && (RLV_ENABLE_SORTING != 0)
+    /*
+     * Put the fixed heading first so one contiguous data run sorts below
+     * it. A mid-list barrier made Pos look "unsorted" globally (1,2,10
+     * above the heading and 1,3,4… below) even though each run was correct.
+     */
+    cells[0] = (CONST_STRPTR *)g_row3;
+    cells[1] = (CONST_STRPTR *)g_row0;
+    cells[2] = (CONST_STRPTR *)g_row1;
+    cells[3] = (CONST_STRPTR *)g_row2;
+    cells[4] = (CONST_STRPTR *)g_row4;
+    cells[5] = (CONST_STRPTR *)g_row5;
+    cells[6] = (CONST_STRPTR *)g_row6;
+    cells[7] = (CONST_STRPTR *)g_row7;
+    cells[8] = (CONST_STRPTR *)g_row8;
+    inits[0] = g_ctrl_init3;
+    inits[1] = g_ctrl_init0;
+    inits[2] = g_ctrl_init1;
+    inits[3] = g_ctrl_init2;
+    inits[4] = g_ctrl_init4;
+    inits[5] = g_ctrl_init5;
+    inits[6] = g_ctrl_init6;
+    inits[7] = g_ctrl_init7;
+    inits[8] = g_ctrl_init8;
+#endif
+
     memset(g_demo_ctrl_store, 0, sizeof(g_demo_ctrl_store));
     for (i = 0; i < 9 && i < DEMO_MAX_ROWS; i++) {
         memcpy(g_demo_ctrl_store[i], inits[i], sizeof(g_demo_ctrl_store[i]));
@@ -515,20 +557,53 @@ static VOID demo_init_rows(void)
         g_rows[i].cells = cells[i];
         g_rows[i].control_cells = g_demo_ctrl_store[i];
         g_rows[i].flags = 0;
-        /* Point user_data at the authoritative On Boolean when present. */
-        if (g_demo_ctrl_store[i][DEMO_CB_COL].flags != 0) {
-            g_rows[i].user_data =
-                (APTR)&g_demo_ctrl_store[i][DEMO_CB_COL].value;
-        } else {
-            g_rows[i].user_data = NULL;
-        }
+        /* Stable numeric tag; cast to APTR for the opaque row field. */
+        g_rows[i].user_data = (APTR)(DEMO_TAG_BASE + (ULONG)i);
     }
-    /* Non-selectable category/heading row for Phase 4 rejection demo. */
+    /* Non-selectable category/heading row (sort barrier when sorting on). */
+#if defined(RLV_ENABLE_SORTING) && (RLV_ENABLE_SORTING != 0)
+    if (g_demo_row_count > 0) {
+        g_rows[0].flags = (UWORD)(RLV_ROW_NONSELECTABLE | RLV_ROW_SORT_FIXED);
+    }
+#else
     if (g_demo_row_count > 3) {
-        g_rows[3].flags = RLV_ROW_NONSELECTABLE;
+        g_rows[3].flags = (UWORD)(RLV_ROW_NONSELECTABLE | RLV_ROW_SORT_FIXED);
     }
-    /* Expandable rows (Delta/heading/Theta stay plain). Startup open/collapsed
-     * follows RLV_Config.initial_expand (demo default: all open). */
+#endif
+    /* Expandable rows (heading / Delta / duplicate-Alpha stay plain). */
+#if defined(RLV_ENABLE_SORTING) && (RLV_ENABLE_SORTING != 0)
+    /* After heading-first reorder: data at 1=Alpha,2=Beta,3=Gamma,5=Eps… */
+    if (g_demo_row_count > 1) {
+        g_rows[1].flags = (UWORD)(g_rows[1].flags
+                                  | RLV_ROW_EXPANDABLE
+                                  | RLV_ROW_EXPANDED);
+    }
+    if (g_demo_row_count > 2) {
+        g_rows[2].flags = (UWORD)(g_rows[2].flags
+                                  | RLV_ROW_EXPANDABLE
+                                  | RLV_ROW_EXPANDED);
+    }
+    if (g_demo_row_count > 3) {
+        g_rows[3].flags = (UWORD)(g_rows[3].flags
+                                  | RLV_ROW_EXPANDABLE
+                                  | RLV_ROW_EXPANDED);
+    }
+    if (g_demo_row_count > 5) {
+        g_rows[5].flags = (UWORD)(g_rows[5].flags
+                                  | RLV_ROW_EXPANDABLE
+                                  | RLV_ROW_EXPANDED);
+    }
+    if (g_demo_row_count > 6) {
+        g_rows[6].flags = (UWORD)(g_rows[6].flags
+                                  | RLV_ROW_EXPANDABLE
+                                  | RLV_ROW_EXPANDED);
+    }
+    if (g_demo_row_count > 7) {
+        g_rows[7].flags = (UWORD)(g_rows[7].flags
+                                  | RLV_ROW_EXPANDABLE
+                                  | RLV_ROW_EXPANDED);
+    }
+#else
     if (g_demo_row_count > 0) {
         g_rows[0].flags = (UWORD)(g_rows[0].flags
                                   | RLV_ROW_EXPANDABLE
@@ -559,6 +634,7 @@ static VOID demo_init_rows(void)
                                   | RLV_ROW_EXPANDABLE
                                   | RLV_ROW_EXPANDED);
     }
+#endif
 #ifdef RLV_ENABLE_BENCHMARKS
     for (i = 9; i < g_demo_row_count && i < DEMO_MAX_ROWS; i++) {
         g_rows[i].flags = (UWORD)(g_rows[i].flags
@@ -567,6 +643,154 @@ static VOID demo_init_rows(void)
     }
 #endif
 }
+
+#if defined(RLV_ENABLE_SORTING) && (RLV_ENABLE_SORTING != 0)
+/*
+ * App-owned date records for column 2 (Date). Indexed by source/attachment
+ * row. Display strings are formatted separately — never parsed for sorting.
+ * Spec.context points at this array for the life of the installed specs.
+ */
+typedef struct DemoSortRecord
+{
+    struct DateStamp stamp; /* ds_Days / ds_Minute / ds_Tick */
+} DemoSortRecord;
+
+/* Pos aligned to heading-first row order (index 0 = Category barrier). */
+static const char *g_sort_pos[9] = {
+    "-", "10", "2", "1", "5", "3", "7", "4", "1"
+};
+
+/*
+ * Display labels (DD-Mon-YYYY). Chronological order differs from ASCII
+ * lexical order of these strings. Sources 2 (Beta) and 6 (Zeta) share
+ * the same DateStamp for equal-key stability checks.
+ */
+static const char *g_sort_date_text[9] = {
+    "-",            /* Category barrier */
+    "04-Aug-2026",  /* Alpha  src1 — newest */
+    "17-Jan-2025",  /* Beta   src2 — equal with Zeta */
+    "29-Feb-2024",  /* Gamma  src3 — leap day */
+    "01-Dec-2025",  /* Delta  src4 */
+    "03-Mar-2024",  /* Epsilon src5 */
+    "17-Jan-2025",  /* Zeta   src6 — equal with Beta */
+    "11-Nov-2023",  /* Eta    src7 — oldest */
+    "15-Jun-2025"   /* Alpha  src8 — duplicate Name */
+};
+
+/* Precomputed Amiga epoch days (1978-01-01); minutes/ticks 0 unless noted. */
+static const LONG g_sort_date_days[9] = {
+    0L,
+    17747L, /* 04-Aug-2026 */
+    17183L, /* 17-Jan-2025 */
+    16860L, /* 29-Feb-2024 */
+    17501L, /* 01-Dec-2025 */
+    16863L, /* 03-Mar-2024 */
+    17183L, /* 17-Jan-2025 — equal key with Beta */
+    16750L, /* 11-Nov-2023 */
+    17332L  /* 15-Jun-2025 */
+};
+
+static DemoSortRecord g_demo_date_records[DEMO_MAX_ROWS];
+static char g_demo_date_display[9][16];
+
+static LONG demo_compare_dates(const RLV_Control *control,
+                               ULONG source_a,
+                               ULONG source_b,
+                               UWORD column,
+                               APTR context)
+{
+    const DemoSortRecord *records;
+    const struct DateStamp *a;
+    const struct DateStamp *b;
+
+    (void)control;
+    (void)column;
+    if (context == 0) {
+        return 0;
+    }
+    records = (const DemoSortRecord *)context;
+    if (source_a >= (ULONG)DEMO_MAX_ROWS || source_b >= (ULONG)DEMO_MAX_ROWS) {
+        return 0;
+    }
+    a = &records[source_a].stamp;
+    b = &records[source_b].stamp;
+    if (a->ds_Days < b->ds_Days) {
+        return -1;
+    }
+    if (a->ds_Days > b->ds_Days) {
+        return 1;
+    }
+    if (a->ds_Minute < b->ds_Minute) {
+        return -1;
+    }
+    if (a->ds_Minute > b->ds_Minute) {
+        return 1;
+    }
+    if (a->ds_Tick < b->ds_Tick) {
+        return -1;
+    }
+    if (a->ds_Tick > b->ds_Tick) {
+        return 1;
+    }
+    return 0;
+}
+
+/*
+ * Name: case-insensitive text
+ * Date: CUSTOM DateStamp via context (DEFAULT_DESC = recent-first)
+ * Pos: unsigned numeric (1,2,10 not 1,10,2)
+ * On: boolean checkbox snapshot
+ * Description: ordinary display text (not a sort key)
+ */
+static const RLV_SortSpec g_demo_sort_specs[] = {
+    { 1, (UWORD)RLV_SORT_TEXT_NOCASE, 0, 0, 0, 0 },
+    { 2, (UWORD)RLV_SORT_CUSTOM, (UWORD)RLV_SORT_F_DEFAULT_DESC, 0,
+      demo_compare_dates, (APTR)g_demo_date_records },
+    { 4, (UWORD)RLV_SORT_UNSIGNED, 0, 0, 0, 0 },
+    { 5, (UWORD)RLV_SORT_BOOLEAN, 0, 0, 0, 0 }
+};
+
+static VOID demo_apply_sort_data(RLV_Column *columns)
+{
+    UWORD i;
+    CONST_STRPTR *cell_ptrs;
+
+    if (columns != 0) {
+        columns[2].title = "Date";
+        columns[4].title = "Pos";
+    }
+    for (i = 0; i < 9 && i < g_demo_row_count; i++) {
+        g_demo_date_records[i].stamp.ds_Days = g_sort_date_days[i];
+        g_demo_date_records[i].stamp.ds_Minute = 0L;
+        g_demo_date_records[i].stamp.ds_Tick = 0L;
+        strcpy(g_demo_date_display[i], g_sort_date_text[i]);
+
+        cell_ptrs = (CONST_STRPTR *)g_rows[i].cells;
+        if (cell_ptrs != 0) {
+            cell_ptrs[2] = g_demo_date_display[i];
+            cell_ptrs[4] = g_sort_pos[i];
+        }
+    }
+}
+
+static BOOL demo_install_sort(RLV_Control *control, RLV_Column *columns)
+{
+    if (control == 0) {
+        return FALSE;
+    }
+    demo_apply_sort_data(columns);
+    /* Re-attach after Date/Pos cell mutation so wrap uses new strings. */
+    if (!rlv_set_rows(control, g_rows, g_demo_row_count)) {
+        return FALSE;
+    }
+    if (!rlv_set_sort_specs(control, g_demo_sort_specs,
+                            (UWORD)(sizeof(g_demo_sort_specs)
+                                    / sizeof(g_demo_sort_specs[0])))) {
+        return FALSE;
+    }
+    return TRUE;
+}
+#endif /* RLV_ENABLE_SORTING */
 
 /*
  * Sum of configured column pixel widths + divider strips.
@@ -1141,55 +1365,104 @@ static VOID demo_cycle_current_row_visual(struct Window *win,
 }
 
 /*
- * Format CELL_CONTROL into the persistent buffer and push via GTTX_Text.
+ * Format a row-related event into the persistent buffer and push via
+ * GTTX_Text. Always includes logical row index and opaque tag.
  * GadTools borrows the pointer (V36+); do not free or reuse for other text.
  */
-static VOID demo_update_event_status(struct Window *win, const RLV_Event *ev)
+static VOID demo_update_event_status(struct Window *win,
+                                     RLV_Control *control,
+                                     const RLV_Event *ev)
 {
     CONST_STRPTR type_name;
     CONST_STRPTR action_name;
     CONST_STRPTR row_name;
-    CONST_STRPTR col_name;
+    ULONG tag;
+#if defined(RLV_ENABLE_SORTING) && (RLV_ENABLE_SORTING != 0)
+    LONG view;
+    UWORD sort_col;
+    UWORD sort_dir;
+#endif
 
     if (win == 0 || ev == 0) {
         return;
     }
 
+    tag = (ULONG)ev->row_user_data;
     type_name = demo_control_type_name(ev->control_type);
     action_name = demo_control_action_name(ev->control_action);
     row_name = "-";
-    col_name = "-";
     if (ev->row >= 0 && (UWORD)ev->row < g_demo_row_count
         && g_rows[ev->row].cells != 0
         && g_rows[ev->row].cells[1] != 0) {
         row_name = g_rows[ev->row].cells[1];
     }
-    if (ev->column < (UWORD)NUM_COLS && g_columns[ev->column].title != 0) {
-        col_name = g_columns[ev->column].title;
-    }
 
-    if (strlen(row_name) > 20) {
-        /* Compact when the Name cell is long (wrap-demo rows). */
+#if defined(RLV_ENABLE_SORTING) && (RLV_ENABLE_SORTING != 0)
+    view = (control != 0) ? rlv_view_row_of(control, ev->row) : -1;
+    sort_col = 0;
+    sort_dir = 0;
+    (void)rlv_get_sort_state(control, &sort_col, &sort_dir);
+#endif
+
+    if (ev->type == (UWORD)RLV_EVENT_SELECTION_CHANGED) {
+#if defined(RLV_ENABLE_SORTING) && (RLV_ENABLE_SORTING != 0)
         sprintf(g_demo_event_text,
-                "CELL row=%ld col=%u (%s) %s %s %u -> %u",
-                (long)ev->row,
+                "Sel src=%ld view=%ld tag=%lu sort=%u/%s",
+                (long)ev->row, (long)view, (unsigned long)tag,
+                (unsigned)sort_col,
+                (sort_dir == (UWORD)RLV_SORT_DESC) ? "DESC" : "ASC");
+#else
+        sprintf(g_demo_event_text,
+                "Selected row %ld tag %lu",
+                (long)ev->row, (unsigned long)tag);
+#endif
+    } else if (ev->type == (UWORD)RLV_EVENT_ACTIVATED) {
+        sprintf(g_demo_event_text,
+                "Activated row %ld tag %lu",
+                (long)ev->row, (unsigned long)tag);
+    } else if (ev->type == (UWORD)RLV_EVENT_SORT_CHANGED) {
+#if defined(RLV_ENABLE_SORTING) && (RLV_ENABLE_SORTING != 0)
+        sprintf(g_demo_event_text,
+                "Sort col=%u %s src=%ld view=%ld tag=%lu",
                 (unsigned)ev->column,
-                col_name,
-                type_name,
-                action_name,
-                (unsigned)ev->previous_value,
-                (unsigned)ev->cell_value);
+                (ev->value == (LONG)RLV_SORT_DESC) ? "DESC" : "ASC",
+                (long)ev->row, (long)view, (unsigned long)tag);
+#else
+        sprintf(g_demo_event_text,
+                "Sort changed col=%u",
+                (unsigned)ev->column);
+#endif
+    } else if (ev->type == (UWORD)RLV_EVENT_CELL_CONTROL) {
+        if (ev->control_type == (UWORD)RLV_COL_TYPE_CHECKBOX) {
+            sprintf(g_demo_event_text,
+                    "Checkbox row %ld tag %lu value %u",
+                    (long)ev->row, (unsigned long)tag,
+                    (unsigned)ev->cell_value);
+        } else if (strlen(row_name) > 16) {
+            sprintf(g_demo_event_text,
+                    "CELL row=%ld tag=%lu col=%u %s %s %u->%u",
+                    (long)ev->row,
+                    (unsigned long)tag,
+                    (unsigned)ev->column,
+                    type_name,
+                    action_name,
+                    (unsigned)ev->previous_value,
+                    (unsigned)ev->cell_value);
+        } else {
+            sprintf(g_demo_event_text,
+                    "CELL row=%ld (%s) tag=%lu %s %s %u->%u",
+                    (long)ev->row,
+                    row_name,
+                    (unsigned long)tag,
+                    type_name,
+                    action_name,
+                    (unsigned)ev->previous_value,
+                    (unsigned)ev->cell_value);
+        }
     } else {
         sprintf(g_demo_event_text,
-                "CELL: row=%ld (%s) col=%u (%s) %s %s %u -> %u",
-                (long)ev->row,
-                row_name,
-                (unsigned)ev->column,
-                col_name,
-                type_name,
-                action_name,
-                (unsigned)ev->previous_value,
-                (unsigned)ev->cell_value);
+                "Event type=%u row=%ld tag %lu",
+                (unsigned)ev->type, (long)ev->row, (unsigned long)tag);
     }
     g_demo_event_text[DEMO_EVENT_TEXT_LEN - 1] = '\0';
 
@@ -1200,6 +1473,23 @@ static VOID demo_update_event_status(struct Window *win, const RLV_Event *ev)
                           GTTX_Text, (ULONG)g_demo_event_text,
                           TAG_DONE);
     }
+}
+
+/*
+ * Locate the authoritative On Boolean by stable row tag. Returns NULL when
+ * the tag is unknown or the row has no checkbox column.
+ */
+static UBYTE *demo_find_checkbox_by_tag(APTR tag)
+{
+    UWORD i;
+
+    for (i = 0; i < g_demo_row_count && i < DEMO_MAX_ROWS; i++) {
+        if (g_rows[i].user_data == tag
+            && g_demo_ctrl_store[i][DEMO_CB_COL].flags != 0) {
+            return &g_demo_ctrl_store[i][DEMO_CB_COL].value;
+        }
+    }
+    return 0;
 }
 
 /*
@@ -2092,18 +2382,22 @@ static BOOL demo_apply_input(RLV_Control *control,
     }
 
     if (ev.type == (UWORD)RLV_EVENT_SELECTION_CHANGED) {
-        printf("Selected logical row %ld\n", (long)ev.row);
-        fflush(stdout);
-    } else if (ev.type == (UWORD)RLV_EVENT_CELL_CONTROL) {
-        printf("Cell control row %ld col %u type=%u action=%u: %u -> %u\n",
+        printf("Selected row %ld tag %lu\n",
                (long)ev.row,
+               (unsigned long)(ULONG)ev.row_user_data);
+        fflush(stdout);
+        demo_update_event_status(win, control, &ev);
+    } else if (ev.type == (UWORD)RLV_EVENT_CELL_CONTROL) {
+        printf("Cell control row %ld tag %lu col %u type=%u action=%u: %u -> %u\n",
+               (long)ev.row,
+               (unsigned long)(ULONG)ev.row_user_data,
                (unsigned)ev.column,
                (unsigned)ev.control_type,
                (unsigned)ev.control_action,
                (unsigned)ev.previous_value,
                (unsigned)ev.cell_value);
         fflush(stdout);
-        demo_update_event_status(win, &ev);
+        demo_update_event_status(win, control, &ev);
 
         if (ev.control_type == (UWORD)RLV_COL_TYPE_DISCLOSURE) {
             /*
@@ -2127,25 +2421,30 @@ static BOOL demo_apply_input(RLV_Control *control,
 
         /*
          * Integrator pattern on checkbox CELL_CONTROL:
-         *   1) Sync the app-owned authoritative Boolean via row_user_data
+         *   1) Sync the app-owned authoritative Boolean by stable tag
          *      (control already mutated its internal snapshot only).
-         *   2) Prefer rlv_render_cell_control; escalate only when that
-         *      reports ROW / VIEWPORT. Selection (if any) already arrived
-         *      on a prior SELECT_DOWN call under SELECT_ROW policy.
+         *   2) Prefer rlv_render_cell_control using the event row index;
+         *      escalate only when that reports ROW / VIEWPORT.
          */
-        if (ev.row_user_data != NULL) {
-            *(UBYTE *)ev.row_user_data = ev.cell_value;
+        {
+            UBYTE *store;
+
+            store = demo_find_checkbox_by_tag(ev.row_user_data);
+            if (store != 0) {
+                *store = ev.cell_value;
+            }
         }
         {
             UWORD repaint;
 
             repaint = rlv_render_cell_control(control, ev.row, ev.column);
             RLV_LOGF("CELL_CONTROL store sync + cell paint row=%ld col=%u "
-                     "type=%u action=%u val=%u result=%u selected=%ld",
+                     "type=%u action=%u val=%u tag=%lu result=%u selected=%ld",
                      (long)ev.row, (unsigned)ev.column,
                      (unsigned)ev.control_type,
                      (unsigned)ev.control_action,
                      (unsigned)ev.cell_value,
+                     (unsigned long)(ULONG)ev.row_user_data,
                      (unsigned)repaint,
                      (long)rlv_get_selected(control));
             if (repaint == (UWORD)RLV_CELL_REPAINT_ERROR) {
@@ -2156,9 +2455,23 @@ static BOOL demo_apply_input(RLV_Control *control,
         demo_sync_scroller(win, scroller, control, last_top);
         return TRUE;
     } else if (ev.type == (UWORD)RLV_EVENT_ACTIVATED) {
-        printf("Activated logical row %ld\n", (long)ev.row);
+        printf("Activated row %ld tag %lu\n",
+               (long)ev.row,
+               (unsigned long)(ULONG)ev.row_user_data);
         fflush(stdout);
+        demo_update_event_status(win, control, &ev);
         RLV_LOG("ACTIVATED — no repaint");
+        return TRUE;
+    } else if (ev.type == (UWORD)RLV_EVENT_SORT_CHANGED) {
+        printf("Sort changed col %u dir %ld src %ld tag %lu\n",
+               (unsigned)ev.column,
+               (long)ev.value,
+               (long)ev.row,
+               (unsigned long)(ULONG)ev.row_user_data);
+        fflush(stdout);
+        demo_update_event_status(win, control, &ev);
+        rlv_render(control, 0);
+        demo_sync_scroller(win, scroller, control, last_top);
         return TRUE;
     }
 
@@ -2349,6 +2662,12 @@ static BOOL demo_recreate_control(RLV_Control **control_io,
         rlv_destroy(new_control);
         return FALSE;
     }
+#if defined(RLV_ENABLE_SORTING) && (RLV_ENABLE_SORTING != 0)
+    if (!demo_install_sort(new_control, (RLV_Column *)columns)) {
+        rlv_destroy(new_control);
+        return FALSE;
+    }
+#endif
 
     /* Display policies before set_bounds so the first layout is correct. */
     demo_apply_display_settings(new_control, settings);
@@ -2541,16 +2860,20 @@ int main(int argc, char **argv)
     border_right = (WORD)(screen->WBorRight + 11); /* size gadget */
 
     /* Scale column widths from actual font, not hard-coded Topaz.
-     * Indices match g_columns: disclosure, Name, Type, Description,
-     * Status, On. Disclosure stays a narrow fixed glyph column. */
+     * Indices match g_columns: disclosure, Name, Type/Date, Description,
+     * Status/Pos, On. Disclosure stays a narrow fixed glyph column. */
     for (i = 0; i < NUM_COLS; i++) {
         columns[i] = g_columns[i];
     }
     columns[0].width_pixels = (WORD)(2 * font_w);   /* disclosure +/- */
     columns[1].width_pixels = (WORD)(10 * font_w);  /* Name */
+#if defined(RLV_ENABLE_SORTING) && (RLV_ENABLE_SORTING != 0)
+    columns[2].width_pixels = (WORD)(11 * font_w);  /* Date DD-Mon-YYYY */
+#else
     columns[2].width_pixels = (WORD)(8 * font_w);   /* Type */
+#endif
     columns[3].width_pixels = (WORD)(18 * font_w);  /* Description */
-    columns[4].width_pixels = (WORD)(6 * font_w);   /* Status */
+    columns[4].width_pixels = (WORD)(6 * font_w);   /* Status / Pos */
     columns[5].width_pixels = (WORD)(3 * font_w);   /* On checkbox */
 
     /*
@@ -2770,6 +3093,19 @@ int main(int argc, char **argv)
         RLV_LOG("FAIL rlv_set_rows");
         goto fail_control;
     }
+#if defined(RLV_ENABLE_SORTING) && (RLV_ENABLE_SORTING != 0)
+    if (!demo_install_sort(control, columns)) {
+        RLV_LOG("FAIL demo_install_sort");
+        goto fail_control;
+    }
+    printf("Sorting enabled: click Name/Date/Pos/On headers.\n");
+    printf("Heading row is a fixed sort barrier at the top; data below sorts as one run.\n");
+    printf("Date sorts by DateStamp via CUSTOM context (not display text).\n");
+    printf("Pos is numeric; first Date click is DESC (recent first).\n");
+#ifdef RLV_ENABLE_LOGGING
+    printf("Logging build: sort map dumped to PROGDIR:rlv.log after each sort.\n");
+#endif
+#endif
 
     demo_bounds_from_geom(&geom, &bounds);
     demo_apply_display_settings(control, &g_demo_applied);
@@ -2793,7 +3129,8 @@ int main(int argc, char **argv)
     printf("V = cycle current-row visual (FULL / MARKER / NONE).\n");
     printf("Settings menu selects pending divider/padding/gap/row-display/"
            "long-word/ellipsis; Apply commits.\n");
-    printf("Row 3 (-- Category --) is non-selectable; Delta/Theta have empty disclosure cells.\n");
+    printf("Row 3 (-- Category --) is non-selectable; Delta/row8 Alpha have empty disclosure cells.\n");
+    printf("Rows 0 and 8 both show Name Alpha with distinct tags 1000 and 1008.\n");
     printf("Activation=%s  Visual=%s\n",
            demo_activation_policy_name(g_demo_activation_policy),
            demo_current_row_visual_name(g_demo_current_row_visual));

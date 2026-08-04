@@ -39,11 +39,20 @@
  *   handle_input return / app handler. control_user_data is deferred
  *   (no per-cell user-data slot on RLV_Cell today).
  *
+ * Per-logical-row tag (stable application identity):
+ *   RLV_Row.user_data is one opaque machine-sized borrowed value (APTR on
+ *   classic 68k). RichListview does not allocate, free, dereference, or
+ *   interpret it. NULL / zero is valid; duplicate values are allowed.
+ *   Every row-related RLV_Event copies it into row_user_data alongside the
+ *   transient logical row index. Wrapped fragments resolve through the
+ *   same logical row — they do not own a separate tag. Lifetime matches
+ *   the borrowed row array (until the next set_rows or destroy).
+ *
  * Ownership: the application owns authoritative Booleans. set_rows borrows
  * RLV_Row / control_cells and copies descriptors into the control
  * snapshot; the control does not write through borrowed app memory by
  * default. On CELL_CONTROL, update the app store from the event (typically
- * via row_user_data), then prefer
+ * via row_user_data as a record pointer or numeric tag), then prefer
  * rlv_render_cell_control(control, row, column) for a fully visible
  * checkbox; fall back to rlv_render_logical_rows when that returns a
  * row/viewport result. Use rlv_set_checkbox_value for reject-restore /
@@ -72,6 +81,16 @@
  *   as rlv_set_checkbox_value). Layout rebuild and viewport anchoring run
  *   inside those APIs and the input path; the application must repaint
  *   (typically full viewport) after a disclosure CELL_CONTROL or API call.
+ *
+ * Optional sorting (RLV_ENABLE_SORTING, default off):
+ *   Per-column RLV_SortSpec (borrowed). View-order map only — never mutates
+ *   borrowed RLV_Row arrays. event->row / selection remain source indices;
+ *   row_user_data follows the source record. Barriers: RLV_ROW_SORT_FIXED
+ *   only (pair with RLV_ROW_NONSELECTABLE for headings). Cell/value edits
+ *   and checkbox toggles do not auto-resort — call rlv_sort again.
+ *   rlv_set_rows clears active sort (identity order; specs kept).
+ *   Attached-page only (not a global catalogue sort). Header click emits
+ *   RLV_EVENT_SORT_CHANGED. See rlv_set_sort_specs.
  *
  * Display policies (defaults preserve historical appearance):
  *   rlv_set_row_display_mode -- COLLAPSIBLE (default) / ALWAYS_EXPANDED /
@@ -222,6 +241,10 @@ typedef struct RLV_Config
 #define RLV_ROW_NONSELECTABLE  0x0001U
 #define RLV_ROW_EXPANDABLE     0x0002U  /* may collapse/expand */
 #define RLV_ROW_EXPANDED       0x0004U  /* meaningful only with EXPANDABLE */
+/* Sort barrier: row stays fixed; contiguous runs between barriers sort
+ * independently. Non-selectable is orthogonal — headings typically use
+ * RLV_ROW_NONSELECTABLE | RLV_ROW_SORT_FIXED. */
+#define RLV_ROW_SORT_FIXED     0x0008U
 
 /* RLV_Column.flags — low nibble is column type (C2). */
 #define RLV_COL_TYPE_MASK      0x000FU
@@ -272,8 +295,16 @@ typedef struct RLV_Row
     const RLV_Cell *control_cells; /* optional; NULL = no controls */
     UWORD flags;                          /* RLV_ROW_NONSELECTABLE,
                                            * RLV_ROW_EXPANDABLE,
-                                           * RLV_ROW_EXPANDED, etc. */
-    APTR user_data;                       /* optional; borrowed */
+                                           * RLV_ROW_EXPANDED,
+                                           * RLV_ROW_SORT_FIXED, etc. */
+    /*
+     * Opaque per-logical-row tag / stable application identity.
+     * Borrowed: not allocated, freed, or dereferenced by RichListview.
+     * NULL is valid; duplicates are allowed (application policy).
+     * May hold a numeric ID or pointer via application-side cast.
+     * Field remains at the end of RLV_Row for C89 positional initialisers.
+     */
+    APTR user_data;
 } RLV_Row;
 
 /* Neutral input events (IDCMP translated by the application/demo). */
@@ -323,8 +354,67 @@ typedef enum RLV_EventType
     RLV_EVENT_SELECTION_CHANGED,
     RLV_EVENT_SCROLL_CHANGED,
     RLV_EVENT_ACTIVATED,     /* NAV_ACTIVATE only; no selection/scroll change */
-    RLV_EVENT_CELL_CONTROL   /* generic cell commit (checkbox SELECT_UP / TOGGLE today) */
+    RLV_EVENT_CELL_CONTROL,  /* generic cell commit (checkbox SELECT_UP / TOGGLE today) */
+    /* Optional sorting (RLV_ENABLE_SORTING): column = sort column,
+     * value = RLV_SORT_ASC/DESC, row = selected source row (-1 if none).
+     * Does not enlarge RLV_Event. Emitted after a successful header-click
+     * or programmatic sort that changes order/direction. */
+    RLV_EVENT_SORT_CHANGED
 } RLV_EventType;
+
+/*
+ * Optional per-column sorting (compiled when RLV_ENABLE_SORTING != 0).
+ * Display policy (wrap, checkbox paint) is separate from sort policy.
+ * Specs are borrowed until the next rlv_set_sort_specs or destroy.
+ *
+ * Sorting never mutates the application RLV_Row array. A control-owned
+ * view-order map remaps display order. Public event->row / selected /
+ * set_checkbox / expand APIs remain source (attachment) indices so
+ * rows[event->row] stays valid. Attached-page only — not a global
+ * catalogue sort for paged datasets.
+ */
+typedef enum RLV_SortKind
+{
+    RLV_SORT_NONE = 0,
+    RLV_SORT_TEXT_NOCASE,
+    RLV_SORT_TEXT_CASE,
+    RLV_SORT_SIGNED,
+    RLV_SORT_UNSIGNED,
+    RLV_SORT_BOOLEAN,
+    RLV_SORT_CUSTOM
+} RLV_SortKind;
+
+typedef enum RLV_SortDir
+{
+    RLV_SORT_ASC = 0,
+    RLV_SORT_DESC = 1
+} RLV_SortDir;
+
+/* RLV_SortSpec.flags */
+#define RLV_SORT_F_DEFAULT_DESC  0x0001U /* first activation uses DESC */
+
+/*
+ * Custom comparator: compare source rows a and b for the active column.
+ * Return <0 if a belongs before b in ascending order, 0 if equal, >0 if
+ * a belongs after b. Direction (ASC/DESC) is applied by the control —
+ * do not reverse inside the callback. Pass pointers/scalars via context;
+ * do not copy whole RLV_Row values onto the stack.
+ */
+typedef LONG (*RLV_SortCompareFn)(const RLV_Control *control,
+                                  ULONG source_a,
+                                  ULONG source_b,
+                                  UWORD column,
+                                  APTR context);
+
+typedef struct RLV_SortSpec
+{
+    UWORD column;              /* column index into current columns */
+    UWORD kind;                /* RLV_SortKind */
+    UWORD flags;               /* RLV_SORT_F_* */
+    UWORD reserved;            /* must be 0 */
+    RLV_SortCompareFn compare; /* required for CUSTOM; else NULL */
+    APTR context;              /* borrowed; passed to compare */
+} RLV_SortSpec;
 
 /* Action for RLV_EVENT_CELL_CONTROL (orthogonal to RLV_COL_TYPE_*).
  * VALUE_CHANGED: checkbox toggle today; future cycle index change.
@@ -342,8 +432,10 @@ typedef enum RLV_CellControlAction
 /*
  * Caller-owned event filled by handle_input. Valid only until the caller
  * returns from the immediate handler; do not retain pointers into it.
- * On CELL_CONTROL: row_user_data is a borrowed copy of
- * RLV_Row.user_data at commit (same lifetime as the app row array).
+ * For every row-related event (SELECTION_CHANGED, ACTIVATED, CELL_CONTROL,
+ * and SCROLL_CHANGED when a current row is reported), row_user_data is a
+ * borrowed copy of RLV_Row.user_data for event->row (same lifetime as the
+ * attached row array). Invalid / no-row events clear it to NULL.
  * Per-cell control_user_data is not provided (deferred). For PRESSED /
  * other stateless actions, previous_value and cell_value may both be zero.
  * LONG value remains scroll_y for scroll/selection — never overload it for
@@ -358,7 +450,7 @@ typedef struct RLV_Event
     UWORD column;           /* CELL_CONTROL */
     UWORD control_type;     /* CELL_CONTROL: RLV_COL_TYPE_* */
     UWORD control_action;   /* CELL_CONTROL: RLV_ACTION_* */
-    APTR  row_user_data;    /* CELL_CONTROL: borrowed row user_data at commit */
+    APTR  row_user_data;    /* borrowed RLV_Row.user_data for row; else NULL */
     UBYTE previous_value;   /* CELL_CONTROL prior cell value (0 if unused) */
     UBYTE cell_value;       /* CELL_CONTROL new cell value (not LONG value) */
 } RLV_Event;
@@ -559,6 +651,43 @@ LONG rlv_get_scroll_y(const RLV_Control *c);
 VOID rlv_set_scroll_y(RLV_Control *c, LONG scroll_y);
 LONG rlv_get_content_height(const RLV_Control *c);
 LONG rlv_get_viewport_height(const RLV_Control *c);
+
+/*
+ * Optional sorting API. When RLV_ENABLE_SORTING is 0, setters return FALSE,
+ * clear/get are no-ops / inactive, and view/source helpers are identity.
+ * Specs are borrowed (not copied). Call after set_columns. Does not paint.
+ *
+ * rlv_sort / header-click: preserves selected source row and top visible
+ * source row where practical; rebuilds layout; does not emit
+ * SELECTION_CHANGED merely because the view index moved.
+ * Header-click emits RLV_EVENT_SORT_CHANGED; programmatic rlv_sort /
+ * rlv_clear_sort are silent (no event). Non-sortable header hits are
+ * consumed (no row selection, no event) — reserved for a future header
+ * event if apps need filter/configure actions.
+ *
+ * Changing cell text, checkbox snapshot, or custom keys does not
+ * auto-resort; call rlv_sort with the active column/direction to reapply.
+ * rlv_set_rows drops the view map and clears active sort (identity
+ * attachment order) while keeping borrowed specs — call rlv_sort again
+ * after a page/refresh if the previous order should apply to new rows.
+ *
+ * rlv_clear_sort: identity maps, clears active column/direction/indicator,
+ * rebuilds layout, preserves selected source + checkbox/expand state,
+ * anchors viewport like rlv_sort; does not emit SORT_CHANGED.
+ * Max sortable attached rows: 65535 (UWORD view-map indices).
+ */
+BOOL rlv_set_sort_specs(RLV_Control *c,
+                        const RLV_SortSpec *specs,
+                        UWORD count);
+BOOL rlv_sort(RLV_Control *c, UWORD column, UWORD direction);
+BOOL rlv_get_sort_state(const RLV_Control *c,
+                        UWORD *column_out,
+                        UWORD *direction_out);
+BOOL rlv_clear_sort(RLV_Control *c);
+/* Source (attachment) index for a view/display row, or -1 if invalid. */
+LONG rlv_source_row_of(const RLV_Control *c, LONG view_row);
+/* View/display index for a source row, or -1 if invalid. */
+LONG rlv_view_row_of(const RLV_Control *c, LONG source_row);
 
 #ifdef __cplusplus
 }

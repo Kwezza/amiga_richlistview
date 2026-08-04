@@ -50,8 +50,12 @@ int main(void)
         rowdisp = (UWORD)RLV_ROWS_COLLAPSIBLE;
         longword = (UWORD)RLV_LONG_WORD_CLIP;
         ellip = (UWORD)RLV_ELLIPSIS_NONE;
+        /* Opaque row tag field must remain public without private headers. */
+        row.user_data = (APTR)0;
+        ev.row_user_data = row.user_data;
         if (policy != 0 || visual != 0 || repaint != 0
-            || rowdisp != 0 || longword != 0 || ellip != 0) {
+            || rowdisp != 0 || longword != 0 || ellip != 0
+            || row.user_data != 0 || ev.row_user_data != 0) {
             return 1;
         }
         policy = (UWORD)RLV_CONTROL_ACTIVATE_KEEP_CURRENT;
@@ -72,6 +76,8 @@ int main(void)
         {
             UWORD initexp;
             RLV_Config cfg2;
+            UWORD sortkind;
+            UWORD sortdir;
 
             initexp = (UWORD)RLV_INITIAL_EXPAND_ALL_OPEN;
             if (initexp != 0) {
@@ -85,6 +91,16 @@ int main(void)
             if (cfg2.initial_expand != 0) {
                 return 1;
             }
+            sortkind = (UWORD)RLV_SORT_TEXT_NOCASE;
+            sortdir = (UWORD)RLV_SORT_ASC;
+            if (sortkind == 0 || sortdir != 0) {
+                return 1;
+            }
+            event_type = (UWORD)RLV_EVENT_SORT_CHANGED;
+            if (event_type == 0) {
+                return 1;
+            }
+            event_type = (UWORD)RLV_EVENT_NONE;
         }
     }
 

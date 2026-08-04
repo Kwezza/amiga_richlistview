@@ -42,6 +42,28 @@ static VOID rlv_clear_event(RLV_Event *result)
     }
 }
 
+/*
+ * Central row identity fill: logical index plus borrowed opaque tag.
+ * Future row-related event types should call this instead of copying
+ * user_data by hand.
+ */
+VOID rlv_event_set_row(const RLV_Control *control,
+                             RLV_Event *event,
+                             LONG logical_row)
+{
+    if (event == 0) {
+        return;
+    }
+    event->row = logical_row;
+    event->row_user_data = 0;
+    if (control != 0
+        && control->rows != 0
+        && logical_row >= 0
+        && (ULONG)logical_row < control->row_count) {
+        event->row_user_data = control->rows[logical_row].user_data;
+    }
+}
+
 static VOID rlv_clear_arm(RLV_Control *c)
 {
     if (c == 0) {
@@ -262,8 +284,9 @@ static BOOL rlv_commit_disclosure_toggle(RLV_Control *c, RLV_Event *result)
 /*
  * Fill a generic RLV_EVENT_CELL_CONTROL payload (centralised for all cell
  * commits — checkbox today; button/cycle later). row_user_data is borrowed
- * from the control's current row array (same lifetime as app rows). For
- * stateless PRESSED actions, previous_value/cell_value may both be zero.
+ * from the control's current row array via rlv_event_set_row (same lifetime
+ * as app rows). For stateless PRESSED actions, previous_value/cell_value
+ * may both be zero.
  */
 static VOID rlv_fill_cell_event(RLV_Control *control,
                                      RLV_Event *event,
@@ -279,19 +302,20 @@ static VOID rlv_fill_cell_event(RLV_Control *control,
     }
 
     event->type = (UWORD)RLV_EVENT_CELL_CONTROL;
-    event->row = row;
+    rlv_event_set_row(control, event, row);
     event->previous_row = -1;
     event->value = 0;
     event->column = column;
     event->control_type = control_type;
     event->control_action = action;
-    event->row_user_data = 0;
-    if (control != 0 && control->rows != 0
-        && row >= 0 && (ULONG)row < control->row_count) {
-        event->row_user_data = control->rows[row].user_data;
-    }
     event->previous_value = previous_value;
     event->cell_value = cell_value;
+    RLV_LOGF("CELL_CONTROL row=%ld col=%u type=%u action=%u tag=%lu",
+             (long)row,
+             (unsigned)column,
+             (unsigned)control_type,
+             (unsigned)action,
+             (unsigned long)(ULONG)event->row_user_data);
 }
 
 /*
@@ -450,14 +474,17 @@ static LONG rlv_viewport_height(const RLV_Control *c)
 }
 
 /*
- * Walk selectable logical rows. dir +1 searches after start; dir -1 before.
+ * Walk selectable logical (source) rows in view/display order.
+ * dir +1 searches after start; dir -1 before.
  * Pass start = -1 with dir +1 for first selectable; start = row_count with
- * dir -1 for last. Returns -1 if none.
+ * dir -1 for last. Returns source index, or -1 if none.
  */
 static LONG rlv_find_selectable(const RLV_Control *c, LONG start, LONG dir)
 {
-    LONG i;
+    LONG v;
     LONG n;
+    LONG start_view;
+    LONG src;
 
     if (c == 0 || c->rows == 0 || c->row_count == 0) {
         return -1;
@@ -467,25 +494,38 @@ static LONG rlv_find_selectable(const RLV_Control *c, LONG start, LONG dir)
     }
 
     n = (LONG)c->row_count;
-    if (dir > 0) {
-        i = start + 1;
-        if (i < 0) {
-            i = 0;
+    if (start < 0) {
+        start_view = -1;
+    } else if (start >= n) {
+        start_view = n;
+    } else {
+        start_view = rlv_view_for_source(c, start);
+        if (start_view < 0) {
+            start_view = start;
         }
-        for (; i < n; i++) {
-            if (rlv_row_selectable(c, i)) {
-                return i;
+    }
+
+    if (dir > 0) {
+        v = start_view + 1;
+        if (v < 0) {
+            v = 0;
+        }
+        for (; v < n; v++) {
+            src = (LONG)rlv_source_for_view(c, (ULONG)v);
+            if (rlv_row_selectable(c, src)) {
+                return src;
             }
             RLV_BENCH_COUNT(RLV_BENCH_COUNTER_NONSELECTABLE_SKIPS);
         }
     } else {
-        i = start - 1;
-        if (i >= n) {
-            i = n - 1;
+        v = start_view - 1;
+        if (v >= n) {
+            v = n - 1;
         }
-        for (; i >= 0; i--) {
-            if (rlv_row_selectable(c, i)) {
-                return i;
+        for (; v >= 0; v--) {
+            src = (LONG)rlv_source_for_view(c, (ULONG)v);
+            if (rlv_row_selectable(c, src)) {
+                return src;
             }
             RLV_BENCH_COUNT(RLV_BENCH_COUNTER_NONSELECTABLE_SKIPS);
         }
@@ -513,20 +553,22 @@ static LONG rlv_page_step(const RLV_Control *c)
 }
 
 /*
- * Selection-centric page target using layout_rows[].top_y.
- * dir +1 = page down; dir -1 = page up. Returns -1 if empty / all
- * non-selectable.
+ * Selection-centric page target using layout_rows[].top_y (view order).
+ * dir +1 = page down; dir -1 = page up. Returns source index, or -1 if
+ * empty / all non-selectable.
  */
 static LONG rlv_page_nav_target(const RLV_Control *c, LONG dir)
 {
     LONG step;
     LONG origin_top;
     LONG target_y;
-    LONG i;
+    LONG v;
     LONG n;
     LONG first_sel;
     LONG last_sel;
     LONG best;
+    LONG src;
+    LONG sel_view;
 
     if (c == 0 || c->layout_rows == 0 || c->row_count == 0) {
         return -1;
@@ -541,7 +583,11 @@ static LONG rlv_page_nav_target(const RLV_Control *c, LONG dir)
 
     step = rlv_page_step(c);
     if (c->selected_row >= 0 && (ULONG)c->selected_row < c->row_count) {
-        origin_top = c->layout_rows[c->selected_row].top_y;
+        sel_view = rlv_view_for_source(c, c->selected_row);
+        if (sel_view < 0 || sel_view >= n) {
+            sel_view = 0;
+        }
+        origin_top = c->layout_rows[sel_view].top_y;
     } else {
         origin_top = c->scroll_y;
     }
@@ -549,12 +595,13 @@ static LONG rlv_page_nav_target(const RLV_Control *c, LONG dir)
     if (dir > 0) {
         target_y = origin_top + step;
         best = -1;
-        for (i = 0; i < n; i++) {
-            if (!rlv_row_selectable(c, i)) {
+        for (v = 0; v < n; v++) {
+            src = (LONG)rlv_source_for_view(c, (ULONG)v);
+            if (!rlv_row_selectable(c, src)) {
                 continue;
             }
-            if (c->layout_rows[i].top_y >= target_y) {
-                best = i;
+            if (c->layout_rows[v].top_y >= target_y) {
+                best = src;
                 break;
             }
         }
@@ -566,12 +613,13 @@ static LONG rlv_page_nav_target(const RLV_Control *c, LONG dir)
 
     target_y = origin_top - step;
     best = -1;
-    for (i = n - 1; i >= 0; i--) {
-        if (!rlv_row_selectable(c, i)) {
+    for (v = n - 1; v >= 0; v--) {
+        src = (LONG)rlv_source_for_view(c, (ULONG)v);
+        if (!rlv_row_selectable(c, src)) {
             continue;
         }
-        if (c->layout_rows[i].top_y <= target_y) {
-            best = i;
+        if (c->layout_rows[v].top_y <= target_y) {
+            best = src;
             break;
         }
     }
@@ -608,9 +656,12 @@ static BOOL rlv_nav_select(RLV_Control *c, LONG hit, RLV_Event *result)
 
     if (result != 0) {
         result->type = (UWORD)RLV_EVENT_SELECTION_CHANGED;
-        result->row = hit;
+        rlv_event_set_row(c, result, hit);
         result->previous_row = old_sel;
         result->value = c->scroll_y;
+        RLV_LOGF("SELECTION_CHANGED row=%ld prev=%ld tag=%lu",
+                 (long)hit, (long)old_sel,
+                 (unsigned long)(ULONG)result->row_user_data);
     }
     RLV_BENCH_COUNT(RLV_BENCH_COUNTER_NAV_MOVES_ACCEPTED);
     RLV_BENCH_END(RLV_BENCH_NAV_SELECTION_UPDATE, bench_select);
@@ -724,6 +775,7 @@ VOID rlv_make_visible(RLV_Control *c, LONG logical_row)
     LONG top;
     LONG bottom;
     LONG scroll;
+    LONG view;
     RLV_BENCH_DECLARE(bench_make_visible);
 
     RLV_BENCH_BEGIN(RLV_BENCH_NAV_MAKE_VISIBLE, bench_make_visible);
@@ -736,9 +788,15 @@ VOID rlv_make_visible(RLV_Control *c, LONG logical_row)
         return;
     }
 
+    view = rlv_view_for_source(c, logical_row);
+    if (view < 0 || (ULONG)view >= c->row_count) {
+        RLV_BENCH_END(RLV_BENCH_NAV_MAKE_VISIBLE, bench_make_visible);
+        return;
+    }
+
     vp_h = rlv_viewport_height(c);
-    top = c->layout_rows[logical_row].top_y;
-    bottom = top + (LONG)c->layout_rows[logical_row].content_height;
+    top = c->layout_rows[view].top_y;
+    bottom = top + (LONG)c->layout_rows[view].content_height;
     scroll = c->scroll_y;
 
     if (top < scroll) {
@@ -803,6 +861,15 @@ BOOL rlv_handle_input(RLV_Control *c,
                  (int)c->viewport_bounds.MinY,
                  (int)c->viewport_bounds.MaxX,
                  (int)c->viewport_bounds.MaxY);
+
+#if defined(RLV_ENABLE_SORTING) && (RLV_ENABLE_SORTING != 0)
+        /* Sortable column headers: never select a data row. */
+        if (rlv_sort_handle_header_click(c, event->x, event->y, result)) {
+            RLV_BENCH_END(RLV_BENCH_KEY_EVENT_TOTAL, bench_key_total);
+            return (result != 0 && result->type != (UWORD)RLV_EVENT_NONE)
+                   ? TRUE : FALSE;
+        }
+#endif
 
         /*
          * Disclosure before checkbox before ordinary row selection.
@@ -891,13 +958,16 @@ BOOL rlv_handle_input(RLV_Control *c,
         if (result != 0) {
             if (hit != old_sel) {
                 result->type = (UWORD)RLV_EVENT_SELECTION_CHANGED;
-                result->row = hit;
+                rlv_event_set_row(c, result, hit);
                 result->previous_row = old_sel;
                 result->value = c->scroll_y;
+                RLV_LOGF("SELECTION_CHANGED row=%ld prev=%ld tag=%lu",
+                         (long)hit, (long)old_sel,
+                         (unsigned long)(ULONG)result->row_user_data);
             } else if (c->scroll_y != old_scroll) {
                 /* Outside-box same-row path only (checkbox same-row returned). */
                 result->type = (UWORD)RLV_EVENT_SCROLL_CHANGED;
-                result->row = hit;
+                rlv_event_set_row(c, result, hit);
                 result->previous_row = -1;
                 result->value = c->scroll_y;
             }
@@ -986,7 +1056,7 @@ BOOL rlv_handle_input(RLV_Control *c,
         }
         if (result != 0) {
             result->type = (UWORD)RLV_EVENT_SCROLL_CHANGED;
-            result->row = c->selected_row;
+            rlv_event_set_row(c, result, c->selected_row);
             result->value = c->scroll_y;
         }
         RLV_BENCH_COUNT(RLV_BENCH_COUNTER_VIEWPORT_SCROLLS);
@@ -1015,7 +1085,7 @@ BOOL rlv_handle_input(RLV_Control *c,
         }
         if (result != 0) {
             result->type = (UWORD)RLV_EVENT_SCROLL_CHANGED;
-            result->row = c->selected_row;
+            rlv_event_set_row(c, result, c->selected_row);
             result->value = c->scroll_y;
         }
         RLV_BENCH_COUNT(RLV_BENCH_COUNTER_VIEWPORT_SCROLLS);
@@ -1031,7 +1101,7 @@ BOOL rlv_handle_input(RLV_Control *c,
         }
         if (result != 0) {
             result->type = (UWORD)RLV_EVENT_SCROLL_CHANGED;
-            result->row = c->selected_row;
+            rlv_event_set_row(c, result, c->selected_row);
             result->value = c->scroll_y;
         }
         RLV_BENCH_COUNT(RLV_BENCH_COUNTER_VIEWPORT_SCROLLS);
@@ -1096,9 +1166,12 @@ BOOL rlv_handle_input(RLV_Control *c,
         }
         if (result != 0) {
             result->type = (UWORD)RLV_EVENT_ACTIVATED;
-            result->row = c->selected_row;
+            rlv_event_set_row(c, result, c->selected_row);
             result->previous_row = -1;
             result->value = c->scroll_y;
+            RLV_LOGF("ACTIVATED row=%ld tag=%lu",
+                     (long)c->selected_row,
+                     (unsigned long)(ULONG)result->row_user_data);
         }
         RLV_BENCH_END(RLV_BENCH_KEY_EVENT_TOTAL, bench_key_total);
         return TRUE;

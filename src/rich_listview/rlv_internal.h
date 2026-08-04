@@ -154,6 +154,23 @@ struct RLV_Control
      */
     LONG expand_old_total_h;
 #endif
+
+#if defined(RLV_ENABLE_SORTING) && (RLV_ENABLE_SORTING != 0)
+    /*
+     * Optional view-order map (UWORD indices). NULL = identity (attachment
+     * order). Allocated only when sorting is configured / applied.
+     * view_to_source[view] = source; source_to_view[source] = view.
+     * Specs are borrowed. Active sort: sort_active != 0.
+     */
+    UWORD *view_to_source;
+    UWORD *source_to_view;
+    ULONG sort_map_count;
+    const RLV_SortSpec *sort_specs; /* borrowed */
+    UWORD sort_spec_count;
+    UWORD sort_column;     /* meaningful when sort_active */
+    UWORD sort_direction;  /* RLV_SORT_ASC / DESC */
+    UWORD sort_active;     /* 0 = identity attachment order */
+#endif
 };
 
 /* Internal expand-state bits in row_expand[]. */
@@ -262,6 +279,44 @@ BOOL rlv_disclosure_ui_enabled(const RLV_Control *c);
 
 /* TRUE when the logical row should use full selected fill/text pens. */
 BOOL rlv_row_uses_selected_fill(const RLV_Control *c, LONG logical_row);
+
+/*
+ * Set event->row and event->row_user_data from a logical row index.
+ * Copies the borrowed RLV_Row.user_data tag when the row is in range;
+ * otherwise sets row_user_data to NULL. Does not touch other event fields.
+ */
+VOID rlv_event_set_row(const RLV_Control *control,
+                             RLV_Event *event,
+                             LONG logical_row);
+
+/*
+ * View-order helpers. When sorting is disabled or the map is inactive,
+ * view == source (identity). layout_rows[] is indexed by view position;
+ * logical_index / public row APIs use source (attachment) indices.
+ */
+#if defined(RLV_ENABLE_SORTING) && (RLV_ENABLE_SORTING != 0)
+ULONG rlv_source_for_view(const RLV_Control *c, ULONG view);
+LONG rlv_view_for_source(const RLV_Control *c, LONG source);
+VOID rlv_sort_free_maps(RLV_Control *c);
+/* After set_rows: drop maps and clear active sort; keep borrowed specs. */
+VOID rlv_sort_on_rows_replaced(RLV_Control *c);
+/* Header click: may sort and fill SORT_CHANGED. TRUE if handled. */
+BOOL rlv_sort_handle_header_click(RLV_Control *c,
+                                  WORD x,
+                                  WORD y,
+                                  RLV_Event *result);
+/* Extra right inset for the active sort column title (pixels). */
+UWORD rlv_sort_header_reserve_px(const RLV_Control *c, UWORD column);
+VOID rlv_sort_draw_indicator(RLV_Control *c,
+                             UWORD column,
+                             WORD cell_left,
+                             WORD cell_right,
+                             WORD header_top,
+                             WORD header_bottom);
+#else
+#define rlv_source_for_view(c, view) ((ULONG)(view))
+#define rlv_view_for_source(c, source) ((LONG)(source))
+#endif
 
 #ifdef __cplusplus
 }

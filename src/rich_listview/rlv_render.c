@@ -320,6 +320,9 @@ static VOID rlv_draw_header(RLV_Control *c)
                       + c->font_metrics.baseline);
 
     for (i = 0; i < c->column_count && c->col_geom != 0; i++) {
+        RLV_PixelColumn geom;
+        UWORD reserve;
+
         x1 = c->col_geom[i].left;
         x2 = rlv_cell_right(c, i);
         if (x2 < x1) {
@@ -327,9 +330,20 @@ static VOID rlv_draw_header(RLV_Control *c)
         }
 
         rlv_draw_cell_frame(c, x1, y1, x2, y2);
+        geom = c->col_geom[i];
+        reserve = 0;
+#if defined(RLV_ENABLE_SORTING) && (RLV_ENABLE_SORTING != 0)
+        reserve = rlv_sort_header_reserve_px(c, i);
+        if (reserve > 0 && geom.text_right >= geom.text_left + (WORD)reserve) {
+            geom.text_right = (WORD)(geom.text_right - (WORD)reserve);
+        }
+#endif
         title = (c->columns != 0) ? c->columns[i].title : 0;
-        rlv_draw_cell_text(c, title, &c->col_geom[i], baseline,
+        rlv_draw_cell_text(c, title, &geom, baseline,
                                 c->pens.text, c->pens.background);
+#if defined(RLV_ENABLE_SORTING) && (RLV_ENABLE_SORTING != 0)
+        rlv_sort_draw_indicator(c, i, x1, x2, y1, y2);
+#endif
     }
     RLV_LOG("header render end");
 }
@@ -417,6 +431,7 @@ BOOL rlv_get_row_paint_area(const RLV_Control *c,
 {
     struct Rectangle content;
     struct Rectangle clipped;
+    LONG view;
 
     if (c == 0 || result == 0 || c->layout_rows == 0) {
         return FALSE;
@@ -429,7 +444,11 @@ BOOL rlv_get_row_paint_area(const RLV_Control *c,
         return FALSE;
     }
 
-    if (!rlv_row_content_screen_rect(c, (ULONG)logical_row, &content)) {
+    view = rlv_view_for_source(c, logical_row);
+    if (view < 0 || (ULONG)view >= c->row_count) {
+        return FALSE;
+    }
+    if (!rlv_row_content_screen_rect(c, (ULONG)view, &content)) {
         return FALSE;
     }
     if (!rlv_intersect_rects(&content, &c->viewport_bounds, &clipped)) {
@@ -678,6 +697,7 @@ static VOID rlv_paint_row_content(RLV_Control *c,
     WORD cell_left;
     WORD cell_right;
     ULONG idx;
+    ULONG source;
     const RLV_CellWrap *cell;
     const RLV_Frag *frag;
     UWORD fill_pen;
@@ -709,9 +729,14 @@ static VOID rlv_paint_row_content(RLV_Control *c,
         line_h = 1;
     }
 
+    source = c->layout_rows[layout_index].logical_index;
+    if (source >= c->row_count) {
+        source = layout_index;
+    }
+
     is_current = (c->selected_row >= 0
-                  && (LONG)layout_index == c->selected_row) ? TRUE : FALSE;
-    use_selected_fill = rlv_row_uses_selected_fill(c, (LONG)layout_index);
+                  && (LONG)source == c->selected_row) ? TRUE : FALSE;
+    use_selected_fill = rlv_row_uses_selected_fill(c, (LONG)source);
     if (use_selected_fill) {
         fill_pen = c->pens.selected_background;
         text_pen = c->pens.selected_text;
@@ -739,7 +764,7 @@ static VOID rlv_paint_row_content(RLV_Control *c,
     single_line_mode =
         (c->row_display_mode == (UWORD)RLV_ROWS_SINGLE_LINE) ? TRUE : FALSE;
 #if defined(RLV_ENABLE_EXPANDABLE_ROWS) && (RLV_ENABLE_EXPANDABLE_ROWS != 0)
-    row_collapsed = rlv_row_is_collapsed_compact(c, (LONG)layout_index);
+    row_collapsed = rlv_row_is_collapsed_compact(c, (LONG)source);
 #endif
 
     for (col = 0; col < c->column_count; col++) {
@@ -747,20 +772,20 @@ static VOID rlv_paint_row_content(RLV_Control *c,
         if (c->columns != 0
             && ((c->columns[col].flags & RLV_COL_TYPE_MASK)
                 == (UWORD)RLV_COL_TYPE_CHECKBOX)) {
-            rlv_checkbox_paint(c, (LONG)layout_index, col, use_selected_fill);
+            rlv_checkbox_paint(c, (LONG)source, col, use_selected_fill);
             continue;
         }
 #if defined(RLV_ENABLE_EXPANDABLE_ROWS) && (RLV_ENABLE_EXPANDABLE_ROWS != 0)
         if (c->columns != 0
             && ((c->columns[col].flags & RLV_COL_TYPE_MASK)
                 == (UWORD)RLV_COL_TYPE_DISCLOSURE)) {
-            rlv_disclosure_paint(c, (LONG)layout_index, col,
+            rlv_disclosure_paint(c, (LONG)source, col,
                                       use_selected_fill);
             continue;
         }
 #endif
 
-        idx = layout_index * (ULONG)c->column_count + (ULONG)col;
+        idx = source * (ULONG)c->column_count + (ULONG)col;
         if (c->cell_wraps == 0 || idx >= c->cell_wrap_count) {
             continue;
         }
@@ -1099,6 +1124,7 @@ VOID rlv_render_from_row(RLV_Control *c,
     struct Rectangle area;
     LONG screen_top;
     LONG old_total_h;
+    LONG view;
     BOOL ok;
 
     RLV_LOGF("render_from_row begin row=%ld prev_scroll=%ld cur_scroll=%ld",
@@ -1128,6 +1154,14 @@ VOID rlv_render_from_row(RLV_Control *c,
         return;
     }
 
+    view = rlv_view_for_source(c, logical_row);
+    if (view < 0 || (ULONG)view >= c->row_count) {
+        RLV_LOG("render_from_row fallback viewport (bad view)");
+        RLV_BENCH_COUNT(RLV_BENCH_COUNTER_FULL_REDRAWS);
+        rlv_render_viewport(c);
+        return;
+    }
+
     /*
      * If scroll moved, rows above the toggle may have shifted on screen —
      * cannot keep the head of the viewport.
@@ -1144,7 +1178,7 @@ VOID rlv_render_from_row(RLV_Control *c,
     }
 
     screen_top = (LONG)c->viewport_bounds.MinY
-                 + c->layout_rows[logical_row].top_y
+                 + c->layout_rows[view].top_y
                  - c->scroll_y;
 
     old_total_h = 0;
@@ -1517,7 +1551,15 @@ static BOOL rlv_try_expand_row_shift(RLV_Control *c,
         return FALSE;
     }
 
-    new_total_h = (LONG)c->layout_rows[logical_row].total_height;
+    {
+        LONG view;
+
+        view = rlv_view_for_source(c, logical_row);
+        if (view < 0 || (ULONG)view >= c->row_count) {
+            return FALSE;
+        }
+        new_total_h = (LONG)c->layout_rows[view].total_height;
+    }
     delta_h = new_total_h - old_total_h;
     if (delta_h == 0) {
         return FALSE;

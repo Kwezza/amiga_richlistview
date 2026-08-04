@@ -38,9 +38,16 @@
   interactive checkboxes (see integrator section below)
 - Expandable rows: narrow disclosure column (`+/-`), mixed
   `RLV_ROW_EXPANDABLE` / `RLV_ROW_EXPANDED` flags, Right/Left keyboard,
-  `C` = Collapse All; status line reports disclosure `CELL_CONTROL`
+  Collapse All (`C`), independent of checkbox/selection
+- Optional sorting (`make rich-listview-demo-sort`): click sortable headers
+  (Name / Date / Pos / On); triangle indicator; Date uses `DateStamp` via
+  `RLV_SortSpec.context` (display `DD-Mon-YYYY` is presentation only);
+  heading row uses `NONSELECTABLE | SORT_FIXED` as a sort barrier; status
+  shows sort + view/source/tag;
+  duplicate Alpha names keep distinct tags; see
+  `docs/RICHLISTVIEW_DATE_SORTING_READINESS_REPORT.md`
 - Read-only GadTools `TEXT_KIND` status field under the ListView showing
-  the latest `RLV_EVENT_CELL_CONTROL` (`GT_SetGadgetAttrs` / `GTTX_Text`)
+  the latest row-related event (`GT_SetGadgetAttrs` / `GTTX_Text`)
 - Pixel `SCROLLER_KIND` synced to `scroll_y` (line / proportional; page via core)
 - Deterministic `EXERCISE` CLI workload (neutral NAV/scroll ops; no RAWKEY inject)
 - Semantic pens from `DrawInfo` via the v36 backend
@@ -60,25 +67,31 @@ headers required).
 1. Mark a column with `RLV_COL_TYPE_CHECKBOX`.
 2. Supply parallel `RLV_Cell` descriptors via
    `RLV_Row.control_cells` (length == column count; `NULL` = none).
-3. Put the app-owned authoritative Boolean behind `user_data` (this demo
-   points at `&store[row][On].value`).
+3. Put a stable opaque tag in `RLV_Row.user_data` (this demo stores
+   numeric IDs `1000 + row`; NULL is also valid). Use the tag to find the
+   authoritative Boolean — do not rely on visible Name text.
 4. Call `rlv_set_rows` — the control **copies** into an internal
    snapshot and does not write app memory by default.
 5. Translate IDCMP: LMB down → `RLV_INPUT_SELECT_DOWN`; LMB up →
    `RLV_INPUT_SELECT_UP` (even if the pointer left the box); Space →
    `RLV_INPUT_TOGGLE`; Return → `RLV_INPUT_NAV_ACTIVATE`.
 6. Handle events separately (at most one per `handle_input` call):
-   - `RLV_EVENT_SELECTION_CHANGED` — regional or full paint as before
+   - `RLV_EVENT_SELECTION_CHANGED` — status shows `Selected row N tag T`;
+     regional or full paint as before
    - `RLV_EVENT_CELL_CONTROL` — checkbox: `control_type` CHECKBOX,
-     `control_action` VALUE_CHANGED; sync store from `ev.cell_value` via
-     `ev.row_user_data`, then prefer
+     `control_action` VALUE_CHANGED; sync store from `ev.cell_value` by
+     looking up `ev.row_user_data`, then prefer
      `rlv_render_cell_control(c, row, column)` (escalates to row/viewport
      when local restore is unsafe); this demo also formats the event into
      a persistent buffer and updates a bordered `TEXT_KIND` status gadget
      with `GT_SetGadgetAttrs(GTTX_Text)`
-   - `RLV_EVENT_ACTIVATED` — Return only; never a toggle
+   - `RLV_EVENT_ACTIVATED` — Return only; never a toggle; status shows
+     `Activated row N tag T`
 7. Reject-restore / async: `rlv_set_checkbox_value` then the same narrow
    or regional repaint (does not write the app store).
+
+Rows 0 and 8 both display Name **Alpha** but use tags **1000** and
+**1008**. Selecting either proves identity is the tag, not visible text.
 
 ## Control activation and current-row visuals
 
@@ -178,26 +191,29 @@ IDCMP → RLV_InputEvent → rlv_handle_input() → RLV_Event (stack)
   both be zero (stateless).
 - Future cycle: same event + VALUE_CHANGED; values carry old/new cycle
   indices (or packed values).
-- `row_user_data` is a borrowed copy of `RLV_Row.user_data` at
-  commit. Per-cell `control_user_data` is deferred (no cell slot yet).
+- `row_user_data` is a borrowed copy of `RLV_Row.user_data` (the opaque
+  per-logical-row tag) for every row-related event, not only CELL_CONTROL.
+  NULL is valid; duplicates are allowed. Per-cell `control_user_data` is
+  deferred (no cell slot yet).
 - Demo formatting (`demo_control_type_name` / status `TEXT_KIND`) stays in
   the example — not linked into the control core.
-- Event construction is centralised in the control (`rlv_fill_cell_event`);
-  future cell types extend enums / fill arguments, not the delivery model.
+- Event construction is centralised in the control (`rlv_event_set_row` /
+  `rlv_fill_cell_event`); future cell types extend enums / fill arguments,
+  not the delivery model.
 
 Row kinds in this demo:
 
-| Row | Name | Disclosure | Checkbox |
-|-----|------|------------|----------|
-| 0 Alpha | Expandable (start open) | `-` | interactive checked |
-| 1 Beta | Expandable (start open) | `-` | interactive unchecked |
-| 2 Gamma | Expandable (start open; tall) | `-` | interactive checked |
-| 3 Category | Non-selectable heading | empty | none |
-| 4 Delta | Not expandable | empty | display-only checked |
-| 5 Epsilon | Expandable (start open, tall) | `-` | interactive unchecked |
-| 6 Zeta | Expandable (start open) | `-`/`+` if multi-line | disabled/ghosted |
-| 7 Eta | Expandable (start open) | `-` | interactive checked |
-| 8 Theta | Not expandable | empty | interactive unchecked |
+| Row | Tag | Name | Disclosure | Checkbox |
+|-----|-----|------|------------|----------|
+| 0 | 1000 | Alpha | Expandable (start open) | interactive checked |
+| 1 | 1001 | Beta | Expandable (start open) | interactive unchecked |
+| 2 | 1002 | Gamma | Expandable (start open; tall) | interactive checked |
+| 3 | 1003 | Category | Non-selectable heading | none |
+| 4 | 1004 | Delta | Not expandable | display-only checked |
+| 5 | 1005 | Epsilon | Expandable (start open, tall) | interactive unchecked |
+| 6 | 1006 | Zeta | Expandable (start open) | disabled/ghosted |
+| 7 | 1007 | Eta | Expandable (start open) | interactive checked |
+| 8 | 1008 | Alpha (duplicate Name) | Not expandable | interactive unchecked |
 
 ## Keyboard mapping
 
@@ -271,6 +287,7 @@ make rich-listview-demo
 make rich-listview-demo-log
 make rich-listview-demo-bench
 make rich-listview-demo-nosmart
+make rich-listview-demo-sort
 ```
 
 | Target | Executable | Logging | Smart scroll |
@@ -494,10 +511,11 @@ Manual checklist (code-path locked; Amiga/emulator when available):
 
 ### Phase C8 demo + integration docs (2026-07-30)
 
-Authoritative app-store sync: `user_data` points at the On-column `UBYTE`;
-`CELL_CONTROL` writes `ev.cell_value` then `render_logical_rows`. Docs mark
-GadTools `clv_cellctl_*` as legacy. Public `rich_listview.h` documents ownership
-/ `set_rows` / experimental checkbox cells.
+Authoritative app-store sync: `user_data` holds a stable numeric tag;
+`CELL_CONTROL` finds the On Boolean by tag scan, writes `ev.cell_value`,
+then `rlv_render_cell_control`. Docs mark GadTools `clv_cellctl_*` as
+legacy. Public `rich_listview.h` documents ownership / `set_rows` /
+experimental checkbox cells.
 
 VBCC `+aos68k -O2 -size -final`, `-cpu=68000` (demo wiring only; formal
 campaign is C9):

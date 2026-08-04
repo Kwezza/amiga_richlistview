@@ -111,6 +111,7 @@ Generic control code never calls Amiga drawing APIs directly. Pens are semantic 
 | `backends/rlv_backend_amiga_v36.c` | `RLV_DrawOps` implementation for classic Amiga |
 | `rlv_log.c` | Optional logger — linked only in logging builds |
 | `rlv_bench.c` | Optional benchmarks — linked only in bench builds |
+| `rlv_sort.c` | Optional sorting — linked only when `RLV_ENABLE_SORTING=1` |
 
 ### 2.4 Typical application loop
 
@@ -139,15 +140,44 @@ IDCMP → RLV_InputEvent → rlv_handle_input() → RLV_Event (caller stack)
 - Delivery is **synchronous** into a caller-owned `RLV_Event`.
 - At most **one** event type per `handle_input` call.
 - The control does **not** paint inside `handle_input`; the application chooses regional vs full vs smart-scroll paint afterward.
-- Do not retain a pointer to the caller-owned `RLV_Event` after the handler returns. `row_user_data` remains application-owned and must remain valid for as long as the installed row data may reference it (it is a borrowed copy of `RLV_Row.user_data` at commit — same lifetime as the app row store).
+- Do not retain a pointer to the caller-owned `RLV_Event` after the handler returns. `row_user_data` is the opaque per-logical-row tag (a borrowed copy of `RLV_Row.user_data`) returned for every row-related event alongside the transient logical row index. It must remain valid while the attached row array may generate events — the same lifetime as the borrowed app row store. RichListview never allocates, frees, or dereferences the tag.
 
 ### 2.5 Data ownership
 
-- The application owns the authoritative row text and checkbox Booleans.
+- The application owns the authoritative row text, checkbox Booleans, and any objects behind `RLV_Row.user_data`.
+- `RLV_Row.user_data` is one opaque machine-sized tag (classic 68k `APTR`). NULL is valid; duplicates are allowed. Applications may store a numeric record ID or a pointer via an explicit cast. The control does not interpret the value.
+- Wrapped display fragments do not own a separate tag; hit-testing and events resolve through the logical row, so every fragment reports the same index and tag.
 - `rlv_set_rows` **borrows** `RLV_Row` / cell pointers and **copies** control descriptors into an internal snapshot.
 - By default the control does **not** write through borrowed application memory.
-- On `RLV_EVENT_CELL_CONTROL`, the app updates its store (often via `row_user_data`), then prefers `rlv_render_cell_control`.
+- On `RLV_EVENT_CELL_CONTROL`, the app updates its store (often by looking up the record via `row_user_data`), then prefers `rlv_render_cell_control` using the event's logical row for regional paint.
 - `rlv_set_checkbox_value` updates the snapshot only (reject-restore / async), without a full `set_rows`.
+
+Future filtering or paging can replace the attached row array without changing
+the tag stored on each application record: events always report the tag
+belonging to the row currently attached at the reported **source** (attachment)
+index. Optional sorting (`RLV_ENABLE_SORTING`) remaps **view** order only and
+does not reorder borrowed `RLV_Row` memory — see overview §2.11 and
+`docs/RICHLISTVIEW_SORTING_IMPLEMENTATION_REPORT.md`.
+
+### 2.11 Optional sorting (attached page only)
+
+When `RLV_ENABLE_SORTING=1` (see `make rich-listview-demo-sort`):
+
+1. Supply per-column `RLV_SortSpec` values via `rlv_set_sort_specs` (borrowed).
+2. Header clicks or `rlv_sort` permute a control-owned view↔source map.
+3. `event->row` / selection / checkbox / expand APIs stay **source** indices;
+   `row_user_data` follows the source record.
+4. `RLV_ROW_SORT_FIXED` rows are sort barriers (pair with
+   `RLV_ROW_NONSELECTABLE` for headings; non-selectable alone does not
+   pin a row).
+5. Sorting is stable (iterative merge); never mutates the app row array.
+6. `rlv_set_rows` clears active sort (identity order; specs kept). Cell
+   edits / checkbox toggles do not auto-resort — call `rlv_sort` again.
+7. Dates/times: app formats display text; sort with `RLV_SORT_CUSTOM` and
+   `context` → typed keys (`DateStamp`, etc.). Demo Date column proves
+   this — see `docs/RICHLISTVIEW_DATE_SORTING_READINESS_REPORT.md`.
+8. **Non-goal:** globally sorting a paged master dataset — sort the full set
+   externally, then attach the page.
 
 ### 2.6 Painting modes
 
@@ -278,6 +308,7 @@ rlv_disclosure.o
 |--------|-------------|
 | `rlv_log.o` | `rich-listview-demo-log` only |
 | `rlv_bench.o` | `rich-listview-demo-bench` only |
+| `rlv_sort.o` | `rich-listview-demo-sort` only (`RLV_ENABLE_SORTING=1`) |
 
 Legacy GadTools enhancer objects, ASCII formatters, binders, selection adapters, and `clv_cellctl_*` are **not part of this repository** and are never linked.
 
@@ -288,6 +319,7 @@ Legacy GadTools enhancer objects, ASCII formatters, binders, selection adapters,
 | `RLV_PLATFORM_AMIGA=1` | always (Makefile) | Platform assert / Amiga path |
 | `RLV_ENABLE_SMART_SCROLL` | `1` | Include smart-scroll paint and backend `ScrollRaster` helpers |
 | `RLV_ENABLE_EXPANDABLE_ROWS` | `1` | Link expand/disclosure modules; compact collapsed rows |
+| `RLV_ENABLE_SORTING` | `0` | Link `rlv_sort.o`; view-order sorting API |
 | `RLV_ENABLE_LOGGING` | off | Logger APIs become real; macros expand to writes |
 | `RLV_ENABLE_BENCHMARKS` | off | Benchmark instrumentation and `rlv_bench.c` |
 
@@ -315,16 +347,18 @@ Different flag combinations must not share the same `.o` files. The Makefile the
 | `build/rich_listview_log/` | smart on + `RLV_ENABLE_LOGGING` | `bin/rich-listview-demo-log` |
 | `build/rich_listview_bench/` | smart on + `RLV_ENABLE_BENCHMARKS` | `bin/rich-listview-demo-bench` |
 | `build/rich_listview_nosmart/` | `RLV_ENABLE_SMART_SCROLL=0` | `bin/rich-listview-demo-nosmart` |
+| `build/rich_listview_sort/` | `RLV_ENABLE_SORTING=1` | `bin/rich-listview-demo-sort` |
 
 That isolation is what makes “only use the parts you need” reliable: turning logging or smart scroll off is not a link-order trick; the unused code is never compiled into those objects.
 
 ### 3.4 Build targets at a glance
 
 ```text
-make rich-listview-demo          # production-shaped: smart on, no log/bench
+make rich-listview-demo          # production-shaped: smart on, no log/bench/sort
 make rich-listview-demo-log      # diagnostics → PROGDIR:rlv.log
 make rich-listview-demo-bench    # timed suite → PROGDIR:rlv_benchmark.txt
 make rich-listview-demo-nosmart  # size twin without smart scroll
+make rich-listview-demo-sort     # optional column sorting
 ```
 
 For a smart-scroll-off binary, use the dedicated target only:
@@ -346,6 +380,7 @@ Overriding `RLV_ENABLE_SMART_SCROLL` on the ordinary `rich-listview-demo` target
 | Smart scroll | Yes | Prefer `rich-listview-demo-nosmart` |
 | Diagnostic logging | Yes | `-log` target; macros no-op otherwise |
 | Benchmarks | Yes | `-bench` target only |
+| Column sorting | Yes | `-sort` target; default off |
 
 Apps that embed RichListview should copy the same pattern: list the core objects explicitly, add `rlv_log.o` / `rlv_bench.o` only for diagnostic binaries, and keep differently `#define`d builds in separate object directories.
 

@@ -173,18 +173,17 @@ static VOID rlv_fill_expand_event(RLV_Control *c,
                  : (UBYTE)RLV_CELL_COLLAPSED;
 
     result->type = (UWORD)RLV_EVENT_CELL_CONTROL;
-    result->row = row;
+    rlv_event_set_row(c, result, row);
     result->previous_row = -1;
     result->value = c->scroll_y;
     result->column = rlv_find_disclosure_column(c);
     result->control_type = (UWORD)RLV_COL_TYPE_DISCLOSURE;
     result->control_action = action;
-    result->row_user_data = 0;
-    if (c->rows != 0 && row >= 0 && (ULONG)row < c->row_count) {
-        result->row_user_data = c->rows[row].user_data;
-    }
     result->previous_value = previous_value;
     result->cell_value = cell_value;
+    RLV_LOGF("CELL_CONTROL disclosure row=%ld action=%u tag=%lu",
+             (long)row, (unsigned)action,
+             (unsigned long)(ULONG)result->row_user_data);
 }
 
 /*
@@ -197,6 +196,7 @@ static VOID rlv_anchor_row_first_line(RLV_Control *c,
 {
     LONG new_scroll;
     LONG row_top;
+    LONG view;
 
     if (c == 0 || c->layout_rows == 0) {
         return;
@@ -205,7 +205,11 @@ static VOID rlv_anchor_row_first_line(RLV_Control *c,
         return;
     }
 
-    row_top = c->layout_rows[row].top_y;
+    view = rlv_view_for_source(c, row);
+    if (view < 0 || (ULONG)view >= c->row_count) {
+        return;
+    }
+    row_top = c->layout_rows[view].top_y;
     new_scroll = row_top
                  - (anchor_screen_y - (LONG)c->viewport_bounds.MinY);
     rlv_set_scroll_y(c, new_scroll);
@@ -295,11 +299,16 @@ BOOL rlv_set_row_expanded(RLV_Control *c,
     anchor_y = 0;
     c->expand_old_total_h = 0;
     if (c->layout_valid && c->layout_rows != 0) {
-        anchor_y = (LONG)c->viewport_bounds.MinY
-                   + c->layout_rows[row].top_y
-                   - c->scroll_y;
-        /* Capture before reheight — required for below-row ScrollRaster. */
-        c->expand_old_total_h = (LONG)c->layout_rows[row].total_height;
+        LONG view;
+
+        view = rlv_view_for_source(c, row);
+        if (view >= 0 && (ULONG)view < c->row_count) {
+            anchor_y = (LONG)c->viewport_bounds.MinY
+                       + c->layout_rows[view].top_y
+                       - c->scroll_y;
+            /* Capture before reheight — required for below-row ScrollRaster. */
+            c->expand_old_total_h = (LONG)c->layout_rows[view].total_height;
+        }
     }
 
     if (!c->layout_valid) {
@@ -310,11 +319,19 @@ BOOL rlv_set_row_expanded(RLV_Control *c,
             RLV_LOG("FAIL EXPAND layout_rebuild");
             return FALSE;
         }
-    } else if (!rlv_layout_reheight_from(c, (ULONG)row)) {
-        c->row_expand[row] = prev_bits;
-        c->expand_old_total_h = 0;
-        RLV_LOG("FAIL EXPAND layout_reheight_from");
-        return FALSE;
+    } else {
+        LONG view;
+
+        view = rlv_view_for_source(c, row);
+        if (view < 0) {
+            view = 0;
+        }
+        if (!rlv_layout_reheight_from(c, (ULONG)view)) {
+            c->row_expand[row] = prev_bits;
+            c->expand_old_total_h = 0;
+            RLV_LOG("FAIL EXPAND layout_reheight_from");
+            return FALSE;
+        }
     }
 
     if (c->layout_rows != 0) {

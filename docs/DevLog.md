@@ -1,5 +1,58 @@
 # RichListview — Dev Log
 
+## 2026-08-04 — Demo Type column → Date (DateStamp + context)
+
+Sorting demo: former Type column is Date (`DD-Mon-YYYY` display).
+`RLV_SORT_CUSTOM` compares Amiga `DateStamp` via `RLV_SortSpec.context`
+(`DemoSortRecord`). Description no longer carries timestamp decoration.
+Equal keys: Beta/Zeta `17-Jan-2025`. Builds: normal / sort / sort-log +
+header audit OK. Amiga `rlv.log` 15:38 verified Date DESC/ASC, equal keys,
+barrier, and non-lexical chronological order.
+Reports: sorting + date-sorting readiness updated.
+
+## 2026-08-04 — Date-sorting readiness audit
+
+Audited then converted: Date column uses source-indexed `DateStamp` records
+via `RLV_SortSpec.context` (not cell text, not `user_data`). Verdict now
+**READY**. `docs/RICHLISTVIEW_DATE_SORTING_READINESS_REPORT.md`
+
+## 2026-08-04 — Sorting policy clarifications
+
+DESC merge now flips only the sign test (no `cmp = -cmp`). Barriers are
+`RLV_ROW_SORT_FIXED` only. Documented: no auto-resort on cell edits;
+`set_rows` clears active sort (identity, specs kept); non-sortable header
+hits consumed without event; `rlv_clear_sort` clears indicator state and
+anchors viewport like `rlv_sort` (silent). Report §§10–17 updated.
+
+## 2026-08-04 — Optional attached-page sorting
+
+Added `RLV_ENABLE_SORTING` (default off) with separately linked `rlv_sort.o`,
+stable iterative merge sort over a view↔source map (borrowed rows never
+reordered), header-click + triangle indicator, text/numeric/boolean/custom
+kinds, and `RLV_ROW_SORT_FIXED` / nonselectable barriers. Public row indices
+remain source/attachment order; tags preserved. Profile:
+`make rich-listview-demo-sort`.
+
+**Build:** normal/log/bench/nosmart/sort + `public-header-audit` OK.
+Normal demo 59252 bytes; sort demo 65820 (+6568); `rlv_sort.o` 8128.
+Not run under emulation.
+
+**Report:** `docs/RICHLISTVIEW_SORTING_IMPLEMENTATION_REPORT.md`
+
+## 2026-08-04 — Stable per-logical-row tags
+
+Completed the existing `RLV_Row.user_data` / `RLV_Event.row_user_data`
+contract so every row-related event returns the opaque tag alongside the
+logical index (`rlv_event_set_row`). No second identity field. Demo uses
+numeric tags `1000+` (duplicate Name “Alpha” on rows 0 and 8) and syncs
+checkbox state by tag scan.
+
+**Build:** all variants + `public-header-audit` OK. Normal demo ~58656 bytes
+(was 58072). `sizeof(RLV_Row/Event)` unchanged (14 / 26). Not run under
+emulation.
+
+**Report:** `docs/RICHLISTVIEW_ROW_TAG_IMPLEMENTATION_REPORT.md`
+
 ## 2026-08-04 — Default collapsed-content ellipsis on
 
 Control and demo now default `RLV_ELLIPSIS_COLLAPSED_CONTENT` on

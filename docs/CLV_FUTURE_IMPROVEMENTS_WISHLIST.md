@@ -261,6 +261,16 @@ Before choosing a default page size, measure on stock-speed hardware or an accur
 
 ## 4. Per-Row Tags and Stable Application Identity
 
+**Status (2026-08-04): delivered in core via existing fields.**
+
+RichListview exposes one opaque machine-sized tag per logical row as
+`RLV_Row.user_data` (`APTR`). Every row-related `RLV_Event` returns it as
+`row_user_data` alongside the transient logical row index
+(`rlv_event_set_row`). No second identity field was added. Optional
+**attached-page sorting** now consumes tags for selection identity
+(`docs/RICHLISTVIEW_SORTING_IMPLEMENTATION_REPORT.md`). Filtering and
+paging remain future work.
+
 ### Motivation
 
 A row should be able to carry an application-defined identifier that is not displayed.
@@ -337,9 +347,34 @@ A minimal implementation could expose one opaque 32-bit or pointer-sized field t
 
 ### Core status
 
-Unlike the more visible presentation features, row tags may justify inclusion in the core because they provide foundational identity for paging, callbacks, controls, and sorting at very low code cost.
+**Implemented:** `RLV_Row.user_data` / `RLV_Event.row_user_data` with
+centralised `rlv_event_set_row` population for selection, activation,
+cell-control (checkbox and disclosure), and scroll-changed (when a current
+row is reported). See
+`docs/RICHLISTVIEW_ROW_TAG_IMPLEMENTATION_REPORT.md`.
 
-If per-row storage cost must remain configurable, support can still be guarded or supplied through an optional prepared-row extension.
+Remaining wishlist items that *consume* tags (filter/paging identity) are
+still open under sections 1–3. Attached-page sort-stable selection via
+source index + tag is delivered with optional sorting.
+
+---
+
+## 4b. Optional Column Sorting (attached page)
+
+**Status (2026-08-04): delivered as optional module (`RLV_ENABLE_SORTING`).**
+
+Separately linkable `rlv_sort.c` provides stable view-order sorting without
+mutating borrowed rows. Header-click + indicator, text/numeric/boolean/custom
+kinds, sort barriers, selection/viewport preservation. See
+`docs/RICHLISTVIEW_SORTING_IMPLEMENTATION_REPORT.md`.
+
+**Still out of scope / follow-ups:** global catalogue sort for paged
+datasets, filtering, third click-to-unsorted cycle (use `rlv_clear_sort`),
+auto-resort after cell edits, `rlv_resort()` helper, and a general
+`RLV_EVENT_HEADER_CLICK` (or return-unhandled) for non-sortable headers
+so apps can open filters / column config without racing selection.
+Date sorting via CUSTOM + `DateStamp` context is demonstrated in the demo
+(see date-sorting readiness report).
 
 ---
 
