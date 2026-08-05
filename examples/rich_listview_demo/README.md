@@ -46,12 +46,22 @@
   shows sort + view/source/tag;
   duplicate Alpha names keep distinct tags; see
   `docs/RICHLISTVIEW_DATE_SORTING_READINESS_REPORT.md`
+- Optional column resize (`make rich-listview-demo-colresize` or
+  `make rich-listview-demo-sort-resize`): drag header dividers for a
+  two-column exchange (XOR guide + clipped highlight title); disclosure
+  and On columns are locked (`RLV_COL_F_NO_RESIZE`); right button cancels;
+  key `R` resets widths; status shows `COLUMN_RESIZED`; keep delivering
+  mouse moves while dragging (`WFLG_REPORTMOUSE`). See
+  `docs/RICHLISTVIEW_COLUMN_RESIZING_IMPLEMENTATION_REPORT.md`
 - Read-only GadTools `TEXT_KIND` status field under the ListView showing
   the latest row-related event (`GT_SetGadgetAttrs` / `GTTX_Text`)
 - Pixel `SCROLLER_KIND` synced to `scroll_y` (line / proportional; page via core)
 - Deterministic `EXERCISE` CLI workload (neutral NAV/scroll ops; no RAWKEY inject)
 - Semantic pens from `DrawInfo` via the v36 backend
 - Optional crash-safe `PROGDIR:rlv.log` (logging build only)
+- Optional CLI / Output Window stdout traces (`make rich-listview-demo-console`);
+  default builds compile demo `printf` to no-ops. In-window status gadget and
+  file logging remain available without the console.
 
 > **Legacy note:** GadTools `clv_cellctl_*` under `src/custom_listview/`
 > (profile `draw-cellctl-checkbox`, `examples/05_draw_cellctl_checkbox/`) is
@@ -288,16 +298,30 @@ make rich-listview-demo-log
 make rich-listview-demo-bench
 make rich-listview-demo-nosmart
 make rich-listview-demo-sort
+make rich-listview-demo-colresize
+make rich-listview-demo-sort-resize
+make rich-listview-demo-sort-resize-log
+make rich-listview-demo-console
 ```
 
-| Target | Executable | Logging | Smart scroll |
-|--------|------------|---------|--------------|
-| `rich-listview-demo` | `bin/rich-listview-demo` | Off | On (default) |
-| `rich-listview-demo-log` | `bin/rich-listview-demo-log` | On | On (default) |
-| `rich-listview-demo-bench` | `bin/rich-listview-demo-bench` | Off | On (default) |
-| `rich-listview-demo-nosmart` | `bin/rich-listview-demo-nosmart` | Off | Off (isolated objects) |
+| Target | Executable | Logging | Smart scroll | Console printf |
+|--------|------------|---------|--------------|----------------|
+| `rich-listview-demo` | `bin/rich-listview-demo` | Off | On (default) | Off |
+| `rich-listview-demo-log` | `bin/rich-listview-demo-log` | On | On (default) | Off |
+| `rich-listview-demo-bench` | `bin/rich-listview-demo-bench` | Off | On (default) | Off |
+| `rich-listview-demo-nosmart` | `bin/rich-listview-demo-nosmart` | Off | Off (isolated objects) | Off |
+| `rich-listview-demo-sort` | `bin/rich-listview-demo-sort` | Off | On | Off |
+| `rich-listview-demo-colresize` | `bin/rich-listview-demo-colresize` | Off | On | Off |
+| `rich-listview-demo-sort-resize` | `bin/rich-listview-demo-sort-resize` | Off | On | Off |
+| `rich-listview-demo-sort-resize-log` | `bin/rich-listview-demo-sort-resize-log` | On | On | Off |
+| `rich-listview-demo-console` | `bin/rich-listview-demo-console` | Off | On (default) | On (`DEMO_ENABLE_CONSOLE`) |
 
 Log file (logging build): `PROGDIR:rlv.log`
+
+Console stdout (console build only): startup help and event traces via
+`printf` to the process stdout / Output Window. Default demos omit this
+to keep low-res Workbench uncluttered. In-window `TEXT_KIND` status and
+`*-log` file logging do not require the console build.
 
 ### EXERCISE / NOKEYBOARD CLI
 

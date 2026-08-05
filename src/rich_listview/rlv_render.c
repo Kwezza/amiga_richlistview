@@ -348,6 +348,102 @@ static VOID rlv_draw_header(RLV_Control *c)
     RLV_LOG("header render end");
 }
 
+#if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
+VOID rlv_render_header_column(RLV_Control *c, UWORD column)
+{
+    const RLV_DrawOps *ops;
+    APTR ctx;
+    WORD x1;
+    WORD x2;
+    WORD y1;
+    WORD y2;
+    WORD baseline;
+    CONST_STRPTR title;
+    RLV_PixelColumn geom;
+    UWORD reserve;
+
+    if (c == 0 || c->draw_ops == 0 || c->col_geom == 0
+        || column >= c->column_count) {
+        return;
+    }
+    if (c->header_bounds.MaxY < c->header_bounds.MinY) {
+        return;
+    }
+
+    ops = c->draw_ops;
+    ctx = c->draw_context;
+    y1 = c->header_bounds.MinY;
+    y2 = c->header_bounds.MaxY;
+    x1 = c->col_geom[column].left;
+    x2 = rlv_cell_right(c, column);
+    if (x2 < x1) {
+        return;
+    }
+
+    ops->set_pens(ctx, c->pens.background, c->pens.background);
+    ops->fill_rect(ctx, x1, y1, x2, y2);
+    rlv_draw_cell_frame(c, x1, y1, x2, y2);
+
+    geom = c->col_geom[column];
+    reserve = 0;
+#if defined(RLV_ENABLE_SORTING) && (RLV_ENABLE_SORTING != 0)
+    reserve = rlv_sort_header_reserve_px(c, column);
+    if (reserve > 0 && geom.text_right >= geom.text_left + (WORD)reserve) {
+        geom.text_right = (WORD)(geom.text_right - (WORD)reserve);
+    }
+#endif
+    baseline = (WORD)(y1 + (WORD)c->cell_padding_y
+                      + c->font_metrics.baseline);
+    title = (c->columns != 0) ? c->columns[column].title : 0;
+    rlv_draw_cell_text(c, title, &geom, baseline,
+                            c->pens.text, c->pens.background);
+#if defined(RLV_ENABLE_SORTING) && (RLV_ENABLE_SORTING != 0)
+    rlv_sort_draw_indicator(c, column, x1, x2, y1, y2);
+#endif
+}
+
+BOOL rlv_render_resized_columns(RLV_Control *c,
+                                UWORD left_column,
+                                UWORD right_column)
+{
+    struct Rectangle area;
+    WORD x1;
+    WORD x2;
+
+    if (c == 0 || c->col_geom == 0
+        || left_column >= c->column_count
+        || right_column >= c->column_count
+        || right_column < left_column) {
+        return FALSE;
+    }
+    if (!c->layout_valid) {
+        if (!rlv_layout_rebuild(c)) {
+            return FALSE;
+        }
+    }
+
+    x1 = c->col_geom[left_column].left;
+    x2 = rlv_cell_right(c, right_column);
+    if (x2 < x1) {
+        return FALSE;
+    }
+
+    rlv_render_header_column(c, left_column);
+    if (right_column != left_column) {
+        rlv_render_header_column(c, right_column);
+    }
+
+    area.MinX = x1;
+    area.MaxX = x2;
+    area.MinY = c->viewport_bounds.MinY;
+    area.MaxY = c->viewport_bounds.MaxY;
+    if (!rlv_paint_viewport_area(c, &area)) {
+        return FALSE;
+    }
+    return TRUE;
+}
+#endif /* RLV_ENABLE_COLUMN_RESIZE */
+
 /* result = a ∩ b; returns FALSE if empty. */
 static BOOL rlv_intersect_rects(const struct Rectangle *a,
                                      const struct Rectangle *b,
@@ -368,6 +464,80 @@ static BOOL rlv_intersect_rects(const struct Rectangle *a,
     return (result->MaxX >= result->MinX
             && result->MaxY >= result->MinY) ? TRUE : FALSE;
 }
+
+#if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
+/*
+ * Restore committed header imagery only inside screen_area ∩ column cell.
+ * Clip + full cell paint (fill/frame/text/indicator); clip trims to the strip.
+ */
+VOID rlv_render_header_column_area(RLV_Control *c,
+                                   UWORD column,
+                                   const struct Rectangle *screen_area)
+{
+    const RLV_DrawOps *ops;
+    APTR ctx;
+    struct Rectangle cell;
+    struct Rectangle paint;
+    WORD baseline;
+    CONST_STRPTR title;
+    RLV_PixelColumn geom;
+    UWORD reserve;
+    BOOL clipped;
+
+    if (c == 0 || screen_area == 0 || c->draw_ops == 0 || c->col_geom == 0
+        || column >= c->column_count) {
+        return;
+    }
+    if (c->header_bounds.MaxY < c->header_bounds.MinY) {
+        return;
+    }
+
+    cell.MinX = c->col_geom[column].left;
+    cell.MaxX = rlv_cell_right(c, column);
+    cell.MinY = c->header_bounds.MinY;
+    cell.MaxY = c->header_bounds.MaxY;
+    if (cell.MaxX < cell.MinX) {
+        return;
+    }
+    if (!rlv_intersect_rects(&cell, screen_area, &paint)) {
+        return;
+    }
+
+    ops = c->draw_ops;
+    ctx = c->draw_context;
+    clipped = FALSE;
+    if (ops->push_clip != 0) {
+        clipped = ops->push_clip(ctx, &paint);
+    }
+
+    ops->set_pens(ctx, c->pens.background, c->pens.background);
+    ops->fill_rect(ctx, cell.MinX, cell.MinY, cell.MaxX, cell.MaxY);
+    rlv_draw_cell_frame(c, cell.MinX, cell.MinY, cell.MaxX, cell.MaxY);
+
+    geom = c->col_geom[column];
+    reserve = 0;
+#if defined(RLV_ENABLE_SORTING) && (RLV_ENABLE_SORTING != 0)
+    reserve = rlv_sort_header_reserve_px(c, column);
+    if (reserve > 0 && geom.text_right >= geom.text_left + (WORD)reserve) {
+        geom.text_right = (WORD)(geom.text_right - (WORD)reserve);
+    }
+#endif
+    baseline = (WORD)(cell.MinY + (WORD)c->cell_padding_y
+                      + c->font_metrics.baseline);
+    title = (c->columns != 0) ? c->columns[column].title : 0;
+    rlv_draw_cell_text(c, title, &geom, baseline,
+                            c->pens.text, c->pens.background);
+#if defined(RLV_ENABLE_SORTING) && (RLV_ENABLE_SORTING != 0)
+    rlv_sort_draw_indicator(c, column,
+                            cell.MinX, cell.MaxX,
+                            cell.MinY, cell.MaxY);
+#endif
+
+    if (clipped && ops->pop_clip != 0) {
+        ops->pop_clip(ctx);
+    }
+}
+#endif /* RLV_ENABLE_COLUMN_RESIZE */
 
 /*
  * Content rectangle for layout row i in window coords (no gap, no viewport

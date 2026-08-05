@@ -1,5 +1,60 @@
 # RichListview — Dev Log
 
+## 2026-08-05 — Column-resize drag preview redraw (7 MHz)
+
+Drag moves no longer restore full left/right headers with black titles.
+Arm paints a white clipped title once; each move erases the XOR guide,
+applies a dirty-strip delta (grey left of committed divider; clipped
+`rlv_render_header_column_area` for exposed right-header pixels only),
+redraws the white title, then draws the guide.
+
+**Build:** `make rich-listview-demo-sort-resize` and
+`rich-listview-demo-sort-resize-log` linked OK. Emulator/hardware visual
+retest on A500+ still required (black-under-white and right-column flash
+should be gone).
+
+## 2026-08-05 — Fix Address Error after column resize (A500+ / 68000)
+
+On Workbench 2.x / A500+, `rich-listview-demo-sort-resize-log` crashed with
+Software Failure **error `#80000003`** (Address Error) immediately after a
+successful column-resize commit.
+
+`PROGDIR:rlv.log` showed arm → commit → full paint → scroller sync all
+completing, then a post-drag `IDCMP_MOUSEMOVE` with odd
+`IAddress=0xc8001b`. With `WFLG_REPORTMOUSE` enabled during the drag,
+Intuition delivers moves whose `IAddress` is **not** a `Gadget*`. The demo
+treated every `MOUSEMOVE` as a gadget-class message, cast that pointer, and
+read `GadgetID` — unaligned access on 68000.
+
+**Fix (demo only):** `demo_idcmp_is_gadget_class` is limited to
+`GADGETUP` / `GADGETDOWN`. `demo_gadget_from_imsg` resolves a gadget from
+`IAddress` only for those classes (and rejects odd addresses); scroller
+`MOUSEMOVE` is accepted only when `IAddress` equals the known scroller
+pointer. Logging no longer dereferences report-mouse addresses.
+
+Also in the same session: resize preview title uses grey `background` +
+`shine` text (avoids blue fill flash on each move).
+
+Rebuild: `make rich-listview-demo-sort-resize-log` (and non-log resize
+targets). Retest on A500+ recommended.
+
+## 2026-08-05 — Optional interactive column resizing
+
+Added `RLV_ENABLE_COLUMN_RESIZE` (default off) with separately linked
+`rlv_column_resize.o`. Control-owned runtime widths; two-column exchange
+(pair total constant); XOR guide + clipped shine title on grey header;
+divider hit zone before sorting; `RLV_EVENT_COLUMN_RESIZED` with regional
+vs full repaint hint. Demo: `make rich-listview-demo-colresize` and
+`make rich-listview-demo-sort-resize` (disclosure/On locked; key R reset;
+right-button cancel; `WFLG_REPORTMOUSE` while dragging).
+
+**Build:** public-header-audit, default, nosmart, sort, colresize,
+sort-resize, sort-resize-log OK. Geometry host test passed.
+Default demo 57360; colresize 62640 (+5280); sort 63700; sort-resize
+69088 (+5388 vs sort). `rlv_column_resize.o` ~7036.
+
+**Report:** `docs/RICHLISTVIEW_COLUMN_RESIZING_IMPLEMENTATION_REPORT.md`
+
 ## 2026-08-04 — Demo Type column → Date (DateStamp + context)
 
 Sorting demo: former Type column is Date (`DD-Mon-YYYY` display).

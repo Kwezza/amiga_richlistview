@@ -378,6 +378,22 @@ Date sorting via CUSTOM + `DateStamp` context is demonstrated in the demo
 
 ---
 
+## 4c. Optional Column Resizing
+
+**Status (2026-08-05): delivered as optional module (`RLV_ENABLE_COLUMN_RESIZE`).**
+
+Separately linkable `rlv_column_resize.c` provides SnoopDos-style two-column
+exchange resizing with an XOR guide and clipped highlighted title preview.
+Control-owned runtime widths; divider hit zone precedes sorting; regional
+vs full repaint on commit. See
+`docs/RICHLISTVIEW_COLUMN_RESIZING_IMPLEMENTATION_REPORT.md`.
+
+**Still out of scope:** horizontal scrolling, free-form multi-column
+redistribution, trailing elastic last-column drag, and writing back into
+borrowed `const RLV_Column` arrays.
+
+---
+
 ## 5. Interaction Between the Wishlist Features
 
 These features should be designed to work together.

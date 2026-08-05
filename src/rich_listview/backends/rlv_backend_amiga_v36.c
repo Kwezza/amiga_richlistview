@@ -56,6 +56,7 @@ static VOID rlv_v36_set_pens(APTR ctx, UWORD front, UWORD back);
 static VOID rlv_v36_fill_rect(APTR ctx, WORD x1, WORD y1, WORD x2, WORD y2);
 static VOID rlv_v36_draw_line(APTR ctx, WORD x1, WORD y1, WORD x2, WORD y2);
 static VOID rlv_v36_draw_dotted_hline(APTR ctx, WORD x1, WORD x2, WORD y);
+static VOID rlv_v36_draw_xor_vline(APTR ctx, WORD x, WORD y1, WORD y2);
 static VOID rlv_v36_draw_text(APTR ctx, WORD x, WORD baseline,
                               CONST_STRPTR text, UWORD length);
 static UWORD rlv_v36_text_width(APTR ctx, CONST_STRPTR text, UWORD length);
@@ -91,7 +92,8 @@ static const RLV_DrawOps g_rlv_v36_ops =
     0,
     0,
 #endif
-    rlv_v36_draw_dotted_hline
+    rlv_v36_draw_dotted_hline,
+    rlv_v36_draw_xor_vline
 };
 
 static struct RastPort *rlv_v36_rp(RLV_BackendV36 *b)
@@ -455,6 +457,44 @@ static VOID rlv_v36_draw_dotted_hline(APTR ctx, WORD x1, WORD x2, WORD y)
     SetDrPt(rp, old_line_pattern);
     rp->linpatcnt = old_pattern_count;
     RLV_BENCH_COUNT(RLV_BENCH_COUNTER_HORIZONTAL_LINES);
+}
+
+/*
+ * Reversible vertical guide for column-resize preview. COMPLEMENT toggles
+ * all bitplanes; drawing the same segment again restores prior pixels.
+ * Saves and restores DrawMode and APen.
+ */
+static VOID rlv_v36_draw_xor_vline(APTR ctx, WORD x, WORD y1, WORD y2)
+{
+    RLV_BackendV36 *b;
+    struct RastPort *rp;
+    UBYTE old_mode;
+    UBYTE old_fg;
+    WORD swap;
+
+    b = (RLV_BackendV36 *)ctx;
+    rp = rlv_v36_rp(b);
+    if (rp == 0) {
+        return;
+    }
+    if (y2 < y1) {
+        swap = y1;
+        y1 = y2;
+        y2 = swap;
+    }
+    if (!rlv_v36_soft_intersect(b, &x, &y1, &x, &y2)) {
+        return;
+    }
+
+    old_mode = rp->DrawMode;
+    old_fg = rp->FgPen;
+    SetAPen(rp, ~0);
+    SetDrMd(rp, COMPLEMENT);
+    Move(rp, x, y1);
+    Draw(rp, x, y2);
+    SetAPen(rp, old_fg);
+    SetDrMd(rp, old_mode);
+    RLV_BENCH_COUNT(RLV_BENCH_COUNTER_VERTICAL_LINES);
 }
 
 static VOID rlv_v36_draw_text(APTR ctx, WORD x, WORD baseline,

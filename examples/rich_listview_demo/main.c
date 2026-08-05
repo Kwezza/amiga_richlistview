@@ -43,14 +43,26 @@
  *     Fixed heading is a top sort barrier. Status line shows
  *     sort + view/source/tag. Logging twin: rich-listview-demo-sort-log.
  *
+ *   - Optional column resize (RLV_ENABLE_COLUMN_RESIZE /
+ *     make rich-listview-demo-colresize or -sort-resize): drag header
+ *     dividers (narrow hit zone) for two-column exchange; XOR guide +
+ *     clipped highlight title preview; disclosure/On columns locked.
+ *     Right button cancels. Key R resets widths. COLUMN_RESIZED updates
+ *     the status line. Keep delivering MOUSEMOVE while dragging (ReportMouse).
+ *
  * Required modules: rlv_*.o (incl. wrap + checkbox + expand/disclosure),
  *                   rlv_backend_amiga_v36.o, rlv_platform.o
  * Sorting build also links rlv_sort.o.
+ * Column-resize builds also link rlv_column_resize.o.
  * Deliberately excluded: clv_renderer_*.o, clv_selection.o, clv_pixel_wrap.o,
  *                        ASCII formatters, clv_cellctl_* (legacy GadTools path)
  *
  * Optional logging build (make rich-listview-demo-log) also links
  * rlv_log.o and writes PROGDIR:rlv.log.
+ *
+ * Optional console stdout traces (make rich-listview-demo-console) enable
+ * DEMO_ENABLE_CONSOLE; default builds compile printf/fflush to no-ops so
+ * CLI/Output Window traffic stays off on low-res Workbench screens.
  */
 
 #include "rich_listview/rich_listview.h"
@@ -72,6 +84,18 @@
 
 #include <stdio.h>
 #include <string.h>
+
+/*
+ * Demo-only stdout traces. Off unless DEMO_ENABLE_CONSOLE is defined.
+ * do/while(0) — not ((void)0) — so VBCC does not emit warning 153.
+ */
+#ifdef DEMO_ENABLE_CONSOLE
+#define DEMO_PRINTF(...)  do { printf(__VA_ARGS__); } while (0)
+#define DEMO_FFLUSH()     do { fflush(stdout); } while (0)
+#else
+#define DEMO_PRINTF(...)  do { } while (0)
+#define DEMO_FFLUSH()     do { } while (0)
+#endif
 
 long __stack = 80000L;
 
@@ -114,6 +138,7 @@ long __stack = 80000L;
 #define DEMO_RAWKEY_A       0x20
 #define DEMO_RAWKEY_V       0x34
 #define DEMO_RAWKEY_C       0x33
+#define DEMO_RAWKEY_R       0x13  /* R — reset column widths when resize on */
 
 /* Interior padding around the control + scroller strip. */
 #define DEMO_PAD              8
@@ -130,6 +155,9 @@ long __stack = 80000L;
 #endif
 
 static LONG g_demo_refresh_depth = 0;
+#if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
+static BOOL g_demo_resize_report_mouse = FALSE;
+#endif
 static BOOL g_demo_gadgets_detached = FALSE;
 
 /*
@@ -308,9 +336,10 @@ static VOID demo_run_benchmarks(RLV_Control *control,
 static const RLV_Column g_columns[NUM_COLS] = {
     /* Disclosure first; Name wraps; Type/Date truncates; Description wraps;
      * Status uses WORD so Long-words policy is testable; On = checkbox.
-     * Sorting builds retitle Type→Date and Status→Pos at install time. */
+     * Sorting builds retitle Type→Date and Status→Pos at install time.
+     * NO_RESIZE locks disclosure and checkbox (resize builds). */
     { "",            2 * 8, RLV_CELL_ALIGN_CENTER, RLV_WRAP_NONE,
-      RLV_COL_TYPE_DISCLOSURE },
+      (UWORD)(RLV_COL_TYPE_DISCLOSURE | RLV_COL_F_NO_RESIZE) },
     { "Name",        10 * 8, RLV_CELL_ALIGN_LEFT,   RLV_WRAP_WORD_OR_CHAR, 0 },
 #if defined(RLV_ENABLE_SORTING) && (RLV_ENABLE_SORTING != 0)
     { "Date",        11 * 8, RLV_CELL_ALIGN_LEFT,   RLV_WRAP_NONE, 0 },
@@ -320,7 +349,7 @@ static const RLV_Column g_columns[NUM_COLS] = {
     { "Description", 18 * 8, RLV_CELL_ALIGN_LEFT,   RLV_WRAP_WORD_OR_CHAR, 0 },
     { "Status",       6 * 8, RLV_CELL_ALIGN_LEFT,   RLV_WRAP_WORD, 0 },
     { "On",           3 * 8, RLV_CELL_ALIGN_CENTER, RLV_WRAP_NONE,
-      RLV_COL_TYPE_CHECKBOX }
+      (UWORD)(RLV_COL_TYPE_CHECKBOX | RLV_COL_F_NO_RESIZE) }
 };
 
 static const char *g_row0[NUM_COLS] = {
@@ -791,6 +820,58 @@ static BOOL demo_install_sort(RLV_Control *control, RLV_Column *columns)
     return TRUE;
 }
 #endif /* RLV_ENABLE_SORTING */
+
+#if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
+/*
+ * Enable interactive resize after set_columns. Disclosure and On stay locked
+ * via RLV_COL_F_NO_RESIZE. Raise Name/Date minima so clamping is visible.
+ */
+static BOOL demo_install_column_resize(RLV_Control *control, WORD font_w)
+{
+    WORD min_name;
+    WORD min_mid;
+
+    if (control == 0) {
+        return FALSE;
+    }
+    rlv_set_column_resize_enabled(control, TRUE);
+    min_name = (WORD)(4 * font_w);
+    min_mid = (WORD)(6 * font_w);
+    if (min_name < 16) {
+        min_name = 16;
+    }
+    if (min_mid < 24) {
+        min_mid = 24;
+    }
+    (void)rlv_set_column_min_width(control, 1, min_name); /* Name */
+    (void)rlv_set_column_min_width(control, 2, min_mid);  /* Date/Type */
+    (void)rlv_set_column_min_width(control, 3, min_mid);  /* Description */
+    (void)rlv_set_column_min_width(control, 4, (WORD)(3 * font_w)); /* Status */
+    return TRUE;
+}
+
+static VOID demo_sync_resize_report_mouse(struct Window *win,
+                                          RLV_Control *control)
+{
+    BOOL active;
+
+    if (win == 0) {
+        return;
+    }
+    active = (control != 0 && rlv_column_resize_is_active(control))
+             ? TRUE : FALSE;
+    if (active && !g_demo_resize_report_mouse) {
+        /* Prefer flag toggle — ReportMouse() calling convention varies. */
+        win->Flags |= WFLG_REPORTMOUSE;
+        g_demo_resize_report_mouse = TRUE;
+        RLV_LOG("COLUMN_RESIZE ReportMouse ON");
+    } else if (!active && g_demo_resize_report_mouse) {
+        win->Flags &= (ULONG)~WFLG_REPORTMOUSE;
+        g_demo_resize_report_mouse = FALSE;
+        RLV_LOG("COLUMN_RESIZE ReportMouse OFF");
+    }
+}
+#endif /* RLV_ENABLE_COLUMN_RESIZE */
 
 /*
  * Sum of configured column pixel widths + divider strips.
@@ -1327,8 +1408,8 @@ static VOID demo_cycle_activation_policy(struct Window *win,
             demo_activation_policy_name(g_demo_activation_policy));
     g_demo_event_text[DEMO_EVENT_TEXT_LEN - 1] = '\0';
     demo_update_status_text(win, g_demo_event_text);
-    printf("%s\n", g_demo_event_text);
-    fflush(stdout);
+    DEMO_PRINTF("%s\n", g_demo_event_text);
+    DEMO_FFLUSH();
     RLV_LOGF("demo activation_policy=%u",
              (unsigned)g_demo_activation_policy);
 }
@@ -1358,8 +1439,8 @@ static VOID demo_cycle_current_row_visual(struct Window *win,
             demo_current_row_visual_name(g_demo_current_row_visual));
     g_demo_event_text[DEMO_EVENT_TEXT_LEN - 1] = '\0';
     demo_update_status_text(win, g_demo_event_text);
-    printf("%s\n", g_demo_event_text);
-    fflush(stdout);
+    DEMO_PRINTF("%s\n", g_demo_event_text);
+    DEMO_FFLUSH();
     RLV_LOGF("demo current_row_visual=%u",
              (unsigned)g_demo_current_row_visual);
 }
@@ -1432,6 +1513,16 @@ static VOID demo_update_event_status(struct Window *win,
                 "Sort changed col=%u",
                 (unsigned)ev->column);
 #endif
+    } else if (ev->type == (UWORD)RLV_EVENT_COLUMN_RESIZED) {
+        sprintf(g_demo_event_text,
+                "Resize %u/%u %d+%d -> %d+%d %s",
+                (unsigned)ev->resize_left,
+                (unsigned)ev->resize_right,
+                (int)ev->old_left_width,
+                (int)ev->old_right_width,
+                (int)ev->new_left_width,
+                (int)ev->new_right_width,
+                (ev->value == RLV_RESIZE_REPAINT_FULL) ? "full" : "reg");
     } else if (ev->type == (UWORD)RLV_EVENT_CELL_CONTROL) {
         if (ev->control_type == (UWORD)RLV_COL_TYPE_CHECKBOX) {
             sprintf(g_demo_event_text,
@@ -1852,15 +1943,46 @@ static VOID demo_handle_newsize(struct Window *win,
     RLV_LOG("RESIZE demo_handle_newsize end");
 }
 
+/*
+ * TRUE only when Intuition defines IAddress as a Gadget*.
+ * MOUSEMOVE is NOT included: with WFLG_REPORTMOUSE the pointer is
+ * undefined / non-gadget and may be odd — dereferencing it causes
+ * Address Error (#80000003) on 68000. Scroller FOLLOWMOUSE moves are
+ * recognised by pointer identity against the known scroller gadget.
+ */
 static BOOL demo_idcmp_is_gadget_class(ULONG class)
 {
     if (class == IDCMP_GADGETUP || class == IDCMP_GADGETDOWN) {
         return TRUE;
     }
-    if (class == IDCMP_MOUSEMOVE) {
-        return TRUE; /* SCROLLERIDCMP may deliver gadget IAddress */
-    }
     return FALSE;
+}
+
+/*
+ * Resolve IAddress to a Gadget only when safe. For MOUSEMOVE, accept the
+ * address only when it is exactly the known scroller (no field access on
+ * unknown pointers).
+ */
+static struct Gadget *demo_gadget_from_imsg(ULONG class,
+                                            APTR iaddr,
+                                            struct Gadget *scroller)
+{
+    if (class == IDCMP_GADGETUP || class == IDCMP_GADGETDOWN) {
+        if (iaddr == 0) {
+            return 0;
+        }
+        /* 68000: odd addresses cannot hold a Gadget. */
+        if ((((ULONG)iaddr) & 1UL) != 0) {
+            return 0;
+        }
+        return (struct Gadget *)iaddr;
+    }
+    if (class == IDCMP_MOUSEMOVE
+        && scroller != 0
+        && iaddr == (APTR)scroller) {
+        return scroller;
+    }
+    return 0;
 }
 
 #ifdef RLV_ENABLE_LOGGING
@@ -1906,7 +2028,15 @@ static VOID demo_log_idcmp(struct IntuiMessage *imsg)
              (int)my,
              (void *)iaddr);
 
-    if (demo_idcmp_is_gadget_class(class) && iaddr != 0) {
+    if (demo_idcmp_is_gadget_class(class)) {
+        if (iaddr == 0) {
+            RLV_LOG("INVARIANT gadget-class message with NULL IAddress");
+            return;
+        }
+        if ((((ULONG)iaddr) & 1UL) != 0) {
+            RLV_LOG("INVARIANT gadget IAddress odd — skip deref");
+            return;
+        }
         g = (struct Gadget *)iaddr;
         RLV_LOGF("IDCMP gadget GadgetID=%u", (unsigned)g->GadgetID);
         if (g->GadgetID != GID_SCROLL
@@ -1916,8 +2046,9 @@ static VOID demo_log_idcmp(struct IntuiMessage *imsg)
             RLV_LOGF("INVARIANT unexpected GadgetID=%u",
                      (unsigned)g->GadgetID);
         }
-    } else if (demo_idcmp_is_gadget_class(class) && iaddr == 0) {
-        RLV_LOG("INVARIANT gadget-class message with NULL IAddress");
+    } else if (class == IDCMP_MOUSEMOVE && iaddr != 0) {
+        /* REPORTMOUSE leaves IAddress undefined — log only, never deref. */
+        RLV_LOG("IDCMP MOUSEMOVE IAddress not treated as Gadget");
     }
 }
 #endif /* RLV_ENABLE_LOGGING */
@@ -2107,8 +2238,8 @@ static VOID demo_run_exercise(RLV_Control *control,
         return;
     }
 
-    printf("EXERCISE: reset scroll_y=0 selected=-1, then fixed NAV/scroll sequence.\n");
-    fflush(stdout);
+    DEMO_PRINTF("EXERCISE: reset scroll_y=0 selected=-1, then fixed NAV/scroll sequence.\n");
+    DEMO_FFLUSH();
 
     rlv_set_selected(control, -1);
     rlv_set_scroll_y(control, 0);
@@ -2156,10 +2287,10 @@ static VOID demo_run_exercise(RLV_Control *control,
         demo_apply_input(control, win, scroller, &inev, last_top);
     }
 
-    printf("EXERCISE complete (selected=%ld scroll_y=%ld). Window remains open.\n",
+    DEMO_PRINTF("EXERCISE complete (selected=%ld scroll_y=%ld). Window remains open.\n",
            (long)rlv_get_selected(control),
            (long)rlv_get_scroll_y(control));
-    fflush(stdout);
+    DEMO_FFLUSH();
 }
 
 #ifdef RLV_ENABLE_BENCHMARKS
@@ -2263,8 +2394,8 @@ static VOID demo_run_benchmarks(RLV_Control *control,
     rlv_bench_init();
     rlv_bench_debug_mark("demo_run_benchmarks enter");
     RLV_BENCH_BEGIN(RLV_BENCH_TOTAL_NAVIGATION_RUN, bench_nav_run);
-    printf("BENCH: running deterministic benchmark suite.\n");
-    fflush(stdout);
+    DEMO_PRINTF("BENCH: running deterministic benchmark suite.\n");
+    DEMO_FFLUSH();
 
     demo_bench_configure(control, win, win->WScreen);
     rlv_bench_debug_mark("demo_run_benchmarks after configure");
@@ -2335,8 +2466,8 @@ static VOID demo_run_benchmarks(RLV_Control *control,
     RLV_BENCH_END(RLV_BENCH_TOTAL_NAVIGATION_RUN, bench_nav_run);
     (VOID)rlv_bench_write_report("PROGDIR:rlv_benchmark.txt");
     rlv_bench_debug_mark("demo_run_benchmarks after write_report");
-    printf("BENCH complete. Report written to PROGDIR:rlv_benchmark.txt\n");
-    fflush(stdout);
+    DEMO_PRINTF("BENCH complete. Report written to PROGDIR:rlv_benchmark.txt\n");
+    DEMO_FFLUSH();
     rlv_bench_shutdown();
 }
 #endif
@@ -2369,6 +2500,10 @@ static BOOL demo_apply_input(RLV_Control *control,
     handled = rlv_handle_input(control, inev, &ev);
     scroll_after = rlv_get_scroll_y(control);
 
+#if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
+    demo_sync_resize_report_mouse(win, control);
+#endif
+
     RLV_LOGF("rlv_handle_input end handled=%d ev.type=%u ev.row=%ld ev.value=%ld scroll_y=%ld",
              (int)handled,
              (unsigned)ev.type,
@@ -2382,13 +2517,13 @@ static BOOL demo_apply_input(RLV_Control *control,
     }
 
     if (ev.type == (UWORD)RLV_EVENT_SELECTION_CHANGED) {
-        printf("Selected row %ld tag %lu\n",
+        DEMO_PRINTF("Selected row %ld tag %lu\n",
                (long)ev.row,
                (unsigned long)(ULONG)ev.row_user_data);
-        fflush(stdout);
+        DEMO_FFLUSH();
         demo_update_event_status(win, control, &ev);
     } else if (ev.type == (UWORD)RLV_EVENT_CELL_CONTROL) {
-        printf("Cell control row %ld tag %lu col %u type=%u action=%u: %u -> %u\n",
+        DEMO_PRINTF("Cell control row %ld tag %lu col %u type=%u action=%u: %u -> %u\n",
                (long)ev.row,
                (unsigned long)(ULONG)ev.row_user_data,
                (unsigned)ev.column,
@@ -2396,7 +2531,7 @@ static BOOL demo_apply_input(RLV_Control *control,
                (unsigned)ev.control_action,
                (unsigned)ev.previous_value,
                (unsigned)ev.cell_value);
-        fflush(stdout);
+        DEMO_FFLUSH();
         demo_update_event_status(win, control, &ev);
 
         if (ev.control_type == (UWORD)RLV_COL_TYPE_DISCLOSURE) {
@@ -2455,22 +2590,47 @@ static BOOL demo_apply_input(RLV_Control *control,
         demo_sync_scroller(win, scroller, control, last_top);
         return TRUE;
     } else if (ev.type == (UWORD)RLV_EVENT_ACTIVATED) {
-        printf("Activated row %ld tag %lu\n",
+        DEMO_PRINTF("Activated row %ld tag %lu\n",
                (long)ev.row,
                (unsigned long)(ULONG)ev.row_user_data);
-        fflush(stdout);
+        DEMO_FFLUSH();
         demo_update_event_status(win, control, &ev);
         RLV_LOG("ACTIVATED — no repaint");
         return TRUE;
     } else if (ev.type == (UWORD)RLV_EVENT_SORT_CHANGED) {
-        printf("Sort changed col %u dir %ld src %ld tag %lu\n",
+        DEMO_PRINTF("Sort changed col %u dir %ld src %ld tag %lu\n",
                (unsigned)ev.column,
                (long)ev.value,
                (long)ev.row,
                (unsigned long)(ULONG)ev.row_user_data);
-        fflush(stdout);
+        DEMO_FFLUSH();
         demo_update_event_status(win, control, &ev);
         rlv_render(control, 0);
+        demo_sync_scroller(win, scroller, control, last_top);
+        return TRUE;
+    } else if (ev.type == (UWORD)RLV_EVENT_COLUMN_RESIZED) {
+        DEMO_PRINTF("Column resize %u/%u %d+%d -> %d+%d (repaint=%ld)\n",
+               (unsigned)ev.resize_left,
+               (unsigned)ev.resize_right,
+               (int)ev.old_left_width,
+               (int)ev.old_right_width,
+               (int)ev.new_left_width,
+               (int)ev.new_right_width,
+               (long)ev.value);
+        DEMO_FFLUSH();
+        demo_update_event_status(win, control, &ev);
+#if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
+        demo_sync_resize_report_mouse(win, control);
+#endif
+        if (ev.value == RLV_RESIZE_REPAINT_REGIONAL
+            && rlv_render_resized_columns(control,
+                                          ev.resize_left,
+                                          ev.resize_right)) {
+            RLV_LOG("COLUMN_RESIZE regional paint ok");
+        } else {
+            RLV_LOG("COLUMN_RESIZE full paint");
+            rlv_render(control, 0);
+        }
         demo_sync_scroller(win, scroller, control, last_top);
         return TRUE;
     }
@@ -2664,6 +2824,13 @@ static BOOL demo_recreate_control(RLV_Control **control_io,
     }
 #if defined(RLV_ENABLE_SORTING) && (RLV_ENABLE_SORTING != 0)
     if (!demo_install_sort(new_control, (RLV_Column *)columns)) {
+        rlv_destroy(new_control);
+        return FALSE;
+    }
+#endif
+#if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
+    if (!demo_install_column_resize(new_control,
+                                    (WORD)(font != 0 ? font->tf_XSize : 8))) {
         rlv_destroy(new_control);
         return FALSE;
     }
@@ -3098,13 +3265,22 @@ int main(int argc, char **argv)
         RLV_LOG("FAIL demo_install_sort");
         goto fail_control;
     }
-    printf("Sorting enabled: click Name/Date/Pos/On headers.\n");
-    printf("Heading row is a fixed sort barrier at the top; data below sorts as one run.\n");
-    printf("Date sorts by DateStamp via CUSTOM context (not display text).\n");
-    printf("Pos is numeric; first Date click is DESC (recent first).\n");
+    DEMO_PRINTF("Sorting enabled: click Name/Date/Pos/On headers.\n");
+    DEMO_PRINTF("Heading row is a fixed sort barrier at the top; data below sorts as one run.\n");
+    DEMO_PRINTF("Date sorts by DateStamp via CUSTOM context (not display text).\n");
+    DEMO_PRINTF("Pos is numeric; first Date click is DESC (recent first).\n");
 #ifdef RLV_ENABLE_LOGGING
-    printf("Logging build: sort map dumped to PROGDIR:rlv.log after each sort.\n");
+    DEMO_PRINTF("Logging build: sort map dumped to PROGDIR:rlv.log after each sort.\n");
 #endif
+#endif
+#if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
+    if (!demo_install_column_resize(control, font_w)) {
+        RLV_LOG("FAIL demo_install_column_resize");
+        goto fail_control;
+    }
+    DEMO_PRINTF("Column resize: drag header dividers (not disclosure/On).\n");
+    DEMO_PRINTF("Right button cancels a drag; R resets column widths.\n");
+    DEMO_PRINTF("MOUSEMOVE is reported while dragging (including outside the control).\n");
 #endif
 
     demo_bounds_from_geom(&geom, &bounds);
@@ -3121,33 +3297,33 @@ int main(int argc, char **argv)
     demo_paint(control);
     demo_sync_scroller(win, scroller, control, &last_scroll_top);
 
-    printf("Phase 5.5 custom control: keyboard nav + resize + scroll sync.\n");
-    printf("Cursor Up/Down = prev/next; Shift+cursor = page; Ctrl+cursor = first/last.\n");
-    printf("Right/Left = expand/collapse current expandable row; C = Collapse All.\n");
-    printf("Return activates selection; Space toggles sole checkbox. Click control for focus.\n");
-    printf("A = toggle activation policy (SELECT_ROW / KEEP_CURRENT).\n");
-    printf("V = cycle current-row visual (FULL / MARKER / NONE).\n");
-    printf("Settings menu selects pending divider/padding/gap/row-display/"
+    DEMO_PRINTF("Phase 5.5 custom control: keyboard nav + resize + scroll sync.\n");
+    DEMO_PRINTF("Cursor Up/Down = prev/next; Shift+cursor = page; Ctrl+cursor = first/last.\n");
+    DEMO_PRINTF("Right/Left = expand/collapse current expandable row; C = Collapse All.\n");
+    DEMO_PRINTF("Return activates selection; Space toggles sole checkbox. Click control for focus.\n");
+    DEMO_PRINTF("A = toggle activation policy (SELECT_ROW / KEEP_CURRENT).\n");
+    DEMO_PRINTF("V = cycle current-row visual (FULL / MARKER / NONE).\n");
+    DEMO_PRINTF("Settings menu selects pending divider/padding/gap/row-display/"
            "long-word/ellipsis; Apply commits.\n");
-    printf("Row 3 (-- Category --) is non-selectable; Delta/row8 Alpha have empty disclosure cells.\n");
-    printf("Rows 0 and 8 both show Name Alpha with distinct tags 1000 and 1008.\n");
-    printf("Activation=%s  Visual=%s\n",
+    DEMO_PRINTF("Row 3 (-- Category --) is non-selectable; Delta/row8 Alpha have empty disclosure cells.\n");
+    DEMO_PRINTF("Rows 0 and 8 both show Name Alpha with distinct tags 1000 and 1008.\n");
+    DEMO_PRINTF("Activation=%s  Visual=%s\n",
            demo_activation_policy_name(g_demo_activation_policy),
            demo_current_row_visual_name(g_demo_current_row_visual));
     if (keyboard_off) {
-        printf("NOKEYBOARD: keyboard NAV_* disabled (mouse/scroller still work).\n");
+        DEMO_PRINTF("NOKEYBOARD: keyboard NAV_* disabled (mouse/scroller still work).\n");
     } else {
-        printf("Keyboard enabled (default). Pass NOKEYBOARD to disable.\n");
+        DEMO_PRINTF("Keyboard enabled (default). Pass NOKEYBOARD to disable.\n");
     }
     if (run_exercise) {
-        printf("CLI EXERCISE: running deterministic sequence after first paint.\n");
+        DEMO_PRINTF("CLI EXERCISE: running deterministic sequence after first paint.\n");
     }
 #ifdef RLV_ENABLE_BENCHMARKS
     if (run_bench) {
-        printf("CLI BENCH: benchmark armed. Move windows, then click Start Benchmark.\n");
+        DEMO_PRINTF("CLI BENCH: benchmark armed. Move windows, then click Start Benchmark.\n");
     }
 #endif
-    fflush(stdout);
+    DEMO_FFLUSH();
 
     if (run_exercise) {
         demo_run_exercise(control, win, scroller, &last_scroll_top);
@@ -3170,15 +3346,11 @@ int main(int argc, char **argv)
             mx = imsg->MouseX;
             my = imsg->MouseY;
             iaddr = imsg->IAddress;
-            g = 0;
+            g = demo_gadget_from_imsg(class, iaddr, scroller);
 
 #ifdef RLV_ENABLE_LOGGING
             demo_log_idcmp(imsg);
 #endif
-
-            if (demo_idcmp_is_gadget_class(class) && iaddr != 0) {
-                g = (struct Gadget *)iaddr;
-            }
 
             /*
              * SIZEVERIFY: Intuition waits for the reply. Detach gadgets
@@ -3243,6 +3415,19 @@ int main(int argc, char **argv)
                         demo_apply_input(active_control, win, scroller, &inev,
                                          &last_scroll_top);
                     }
+#if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
+                } else if ((code & ~IECODE_UP_PREFIX) == IECODE_RBUTTON) {
+                    /* Cancel an in-progress column-resize drag. */
+                    if (active_control != 0
+                        && rlv_column_resize_is_active(active_control)) {
+                        memset(&inev, 0, sizeof(inev));
+                        inev.type = (UWORD)RLV_INPUT_CANCEL;
+                        inev.x = mx;
+                        inev.y = my;
+                        demo_apply_input(active_control, win, scroller, &inev,
+                                         &last_scroll_top);
+                    }
+#endif
                 }
             } else if (class == IDCMP_RAWKEY) {
                 UWORD key;
@@ -3271,6 +3456,22 @@ int main(int argc, char **argv)
                     demo_sync_scroller(win, scroller, active_control,
                                       &last_scroll_top);
                     RLV_LOG("COLLAPSE_ALL via key C");
+#if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
+                } else if ((code & IECODE_UP_PREFIX) == 0
+                           && active_control != 0
+                           && key == DEMO_RAWKEY_R) {
+                    if (rlv_reset_column_widths(active_control)) {
+                        struct Rectangle reset_bounds;
+
+                        demo_bounds_from_geom(&g_demo_geom, &reset_bounds);
+                        rlv_set_bounds(active_control, &reset_bounds);
+                        demo_update_status_text(win, "Column widths reset");
+                        demo_paint(active_control);
+                        demo_sync_scroller(win, scroller, active_control,
+                                          &last_scroll_top);
+                        RLV_LOG("COLUMN_RESIZE reset via key R");
+                    }
+#endif
                 } else if (active_control != 0
                            && rlv_get_keyboard_enabled(active_control)
                            && demo_translate_rawkey(code, qual, &inev)) {
@@ -3300,11 +3501,28 @@ int main(int argc, char **argv)
                     demo_handle_scroller(control, win, scroller,
                                          &last_scroll_top, class, code);
                 }
-            } else if ((class == IDCMP_GADGETDOWN || class == IDCMP_MOUSEMOVE)
+            } else if (class == IDCMP_GADGETDOWN
                        && g != 0 && g->GadgetID == GID_SCROLL) {
                 active_control = control;
                 demo_handle_scroller(control, win, scroller,
                                      &last_scroll_top, class, code);
+            } else if (class == IDCMP_MOUSEMOVE) {
+#if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
+                if (active_control != 0
+                    && rlv_column_resize_is_active(active_control)) {
+                    memset(&inev, 0, sizeof(inev));
+                    inev.type = (UWORD)RLV_INPUT_POINTER_MOVE;
+                    inev.x = mx;
+                    inev.y = my;
+                    demo_apply_input(active_control, win, scroller, &inev,
+                                     &last_scroll_top);
+                } else
+#endif
+                if (g != 0 && g->GadgetID == GID_SCROLL) {
+                    active_control = control;
+                    demo_handle_scroller(control, win, scroller,
+                                         &last_scroll_top, class, code);
+                }
             } else if (class == IDCMP_NEWSIZE) {
                 if (!g_demo_gadgets_detached && glist != 0) {
                     RemoveGList(win, glist, -1);

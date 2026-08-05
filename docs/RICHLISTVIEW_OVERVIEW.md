@@ -112,6 +112,7 @@ Generic control code never calls Amiga drawing APIs directly. Pens are semantic 
 | `rlv_log.c` | Optional logger — linked only in logging builds |
 | `rlv_bench.c` | Optional benchmarks — linked only in bench builds |
 | `rlv_sort.c` | Optional sorting — linked only when `RLV_ENABLE_SORTING=1` |
+| `rlv_column_resize.c` | Optional column resize — linked when `RLV_ENABLE_COLUMN_RESIZE=1` |
 
 ### 2.4 Typical application loop
 
@@ -178,6 +179,24 @@ When `RLV_ENABLE_SORTING=1` (see `make rich-listview-demo-sort`):
    this — see `docs/RICHLISTVIEW_DATE_SORTING_READINESS_REPORT.md`.
 8. **Non-goal:** globally sorting a paged master dataset — sort the full set
    externally, then attach the page.
+
+### 2.12 Optional column resizing
+
+When `RLV_ENABLE_COLUMN_RESIZE=1` (see `make rich-listview-demo-colresize` or
+`make rich-listview-demo-sort-resize`):
+
+1. Call `rlv_set_column_resize_enabled(control, TRUE)` after `set_columns`.
+2. Runtime widths are control-owned copies of `RLV_Column.width_pixels`
+   (borrowed columns are never written).
+3. Drag a header divider (±3 px hit zone) for a two-column exchange: the pair
+   total stays constant; later columns keep the same X. Mark locked columns
+   with `RLV_COL_F_NO_RESIZE`.
+4. Live preview draws an XOR guide and a clipped white (`shine`) title on
+   the normal grey header face inside `handle_input` without rebuilding layout. Keep delivering
+   `POINTER_MOVE` / `SELECT_UP` / `CANCEL` while the button is held
+   (`rlv_column_resize_is_active` + `WFLG_REPORTMOUSE` in the demo).
+5. Release emits `RLV_EVENT_COLUMN_RESIZED` with old/new widths and a
+   regional vs full repaint hint. Right button / `RLV_INPUT_CANCEL` aborts.
 
 ### 2.6 Painting modes
 
@@ -309,6 +328,7 @@ rlv_disclosure.o
 | `rlv_log.o` | `rich-listview-demo-log` only |
 | `rlv_bench.o` | `rich-listview-demo-bench` only |
 | `rlv_sort.o` | `rich-listview-demo-sort` only (`RLV_ENABLE_SORTING=1`) |
+| `rlv_column_resize.o` | `*-colresize` / `*-sort-resize` (`RLV_ENABLE_COLUMN_RESIZE=1`) |
 
 Legacy GadTools enhancer objects, ASCII formatters, binders, selection adapters, and `clv_cellctl_*` are **not part of this repository** and are never linked.
 
@@ -320,6 +340,7 @@ Legacy GadTools enhancer objects, ASCII formatters, binders, selection adapters,
 | `RLV_ENABLE_SMART_SCROLL` | `1` | Include smart-scroll paint and backend `ScrollRaster` helpers |
 | `RLV_ENABLE_EXPANDABLE_ROWS` | `1` | Link expand/disclosure modules; compact collapsed rows |
 | `RLV_ENABLE_SORTING` | `0` | Link `rlv_sort.o`; view-order sorting API |
+| `RLV_ENABLE_COLUMN_RESIZE` | `0` | Link `rlv_column_resize.o`; interactive resize |
 | `RLV_ENABLE_LOGGING` | off | Logger APIs become real; macros expand to writes |
 | `RLV_ENABLE_BENCHMARKS` | off | Benchmark instrumentation and `rlv_bench.c` |
 
@@ -348,6 +369,8 @@ Different flag combinations must not share the same `.o` files. The Makefile the
 | `build/rich_listview_bench/` | smart on + `RLV_ENABLE_BENCHMARKS` | `bin/rich-listview-demo-bench` |
 | `build/rich_listview_nosmart/` | `RLV_ENABLE_SMART_SCROLL=0` | `bin/rich-listview-demo-nosmart` |
 | `build/rich_listview_sort/` | `RLV_ENABLE_SORTING=1` | `bin/rich-listview-demo-sort` |
+| `build/rich_listview_colresize/` | `RLV_ENABLE_COLUMN_RESIZE=1` | `bin/rich-listview-demo-colresize` |
+| `build/rich_listview_sort_resize/` | sort + resize | `bin/rich-listview-demo-sort-resize` |
 
 That isolation is what makes “only use the parts you need” reliable: turning logging or smart scroll off is not a link-order trick; the unused code is never compiled into those objects.
 
@@ -359,6 +382,8 @@ make rich-listview-demo-log      # diagnostics → PROGDIR:rlv.log
 make rich-listview-demo-bench    # timed suite → PROGDIR:rlv_benchmark.txt
 make rich-listview-demo-nosmart  # size twin without smart scroll
 make rich-listview-demo-sort     # optional column sorting
+make rich-listview-demo-colresize    # optional column resize
+make rich-listview-demo-sort-resize  # sorting + column resize
 ```
 
 For a smart-scroll-off binary, use the dedicated target only:

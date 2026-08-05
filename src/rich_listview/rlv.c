@@ -239,6 +239,10 @@ VOID rlv_destroy(RLV_Control *control)
     control->armed_row = -1;
     control->armed_column = 0;
     control->armed_type = 0;
+#if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
+    rlv_column_resize_cancel(control, FALSE);
+    rlv_column_resize_free(control);
+#endif
     rlv_free_layout_cache(control);
     rlv_free_cell_snapshot(control);
 #if defined(RLV_ENABLE_EXPANDABLE_ROWS) && (RLV_ENABLE_EXPANDABLE_ROWS != 0)
@@ -262,6 +266,12 @@ BOOL rlv_set_columns(RLV_Control *c,
     }
     c->columns = cols;
     c->column_count = count;
+#if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
+    if (!rlv_column_resize_on_columns_set(c)) {
+        rlv_layout_invalidate(c);
+        return FALSE;
+    }
+#endif
     if (!rlv_refresh_cell_snapshot(c)) {
         rlv_layout_invalidate(c);
         return FALSE;
@@ -286,6 +296,9 @@ BOOL rlv_set_rows(RLV_Control *c,
     if (count > 0 && rows == 0) {
         return FALSE;
     }
+#if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
+    rlv_column_resize_cancel(c, TRUE);
+#endif
     c->rows = rows;
     c->row_count = count;
     if (count > 0 && rows != 0) {
@@ -453,6 +466,79 @@ LONG rlv_view_row_of(const RLV_Control *c, LONG source_row)
 }
 #endif /* !RLV_ENABLE_SORTING */
 
+#if !defined(RLV_ENABLE_COLUMN_RESIZE) || (RLV_ENABLE_COLUMN_RESIZE == 0)
+VOID rlv_set_column_resize_enabled(RLV_Control *c, BOOL enabled)
+{
+    (void)c;
+    (void)enabled;
+}
+
+BOOL rlv_get_column_resize_enabled(const RLV_Control *c)
+{
+    (void)c;
+    return FALSE;
+}
+
+BOOL rlv_column_resize_is_active(const RLV_Control *c)
+{
+    (void)c;
+    return FALSE;
+}
+
+BOOL rlv_get_column_width(const RLV_Control *c, UWORD column, WORD *out_width)
+{
+    if (c == 0 || out_width == 0 || c->columns == 0
+        || column >= c->column_count) {
+        return FALSE;
+    }
+    *out_width = c->columns[column].width_pixels;
+    if (*out_width < 1) {
+        *out_width = 1;
+    }
+    return TRUE;
+}
+
+BOOL rlv_set_column_width(RLV_Control *c, UWORD column, WORD width)
+{
+    (void)c;
+    (void)column;
+    (void)width;
+    return FALSE;
+}
+
+BOOL rlv_set_column_widths(RLV_Control *c, const WORD *widths, UWORD count)
+{
+    (void)c;
+    (void)widths;
+    (void)count;
+    return FALSE;
+}
+
+BOOL rlv_reset_column_widths(RLV_Control *c)
+{
+    (void)c;
+    return FALSE;
+}
+
+BOOL rlv_set_column_min_width(RLV_Control *c, UWORD column, WORD min_width)
+{
+    (void)c;
+    (void)column;
+    (void)min_width;
+    return FALSE;
+}
+
+BOOL rlv_render_resized_columns(RLV_Control *c,
+                                UWORD left_column,
+                                UWORD right_column)
+{
+    (void)c;
+    (void)left_column;
+    (void)right_column;
+    return FALSE;
+}
+#endif /* !RLV_ENABLE_COLUMN_RESIZE */
+
 VOID rlv_set_cell_padding(RLV_Control *c, UWORD x, UWORD y)
 {
     if (c == 0) {
@@ -533,6 +619,9 @@ VOID rlv_set_bounds(RLV_Control *c, const struct Rectangle *bounds)
     if (c == 0 || bounds == 0) {
         return;
     }
+#if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
+    rlv_column_resize_cancel(c, TRUE);
+#endif
 
     RLV_BENCH_BEGIN(RLV_BENCH_TOTAL_PREPARE, bench_prepare);
 

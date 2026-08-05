@@ -91,6 +91,13 @@ typedef struct RLV_DrawOps
      * one-pixel segments when a backend does not provide this operation.
      */
     VOID (*draw_dotted_hline)(APTR ctx, WORD x1, WORD x2, WORD y);
+    /*
+     * Optional reversible vertical line (COMPLEMENT / XOR-style).
+     * Drawing the same segment twice restores prior pixels. NULL = unavailable;
+     * callers must fall back (e.g. skip guide or restore by repaint).
+     * Must preserve the caller's DrawMode / pens on return.
+     */
+    VOID (*draw_xor_vline)(APTR ctx, WORD x, WORD y1, WORD y2);
 } RLV_DrawOps;
 
 #ifdef __cplusplus

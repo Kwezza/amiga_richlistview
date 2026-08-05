@@ -39,6 +39,12 @@ static VOID rlv_clear_event(RLV_Event *result)
         result->row_user_data = 0;
         result->previous_value = 0;
         result->cell_value = 0;
+        result->resize_left = 0;
+        result->resize_right = 0;
+        result->old_left_width = 0;
+        result->old_right_width = 0;
+        result->new_left_width = 0;
+        result->new_right_width = 0;
     }
 }
 
@@ -862,6 +868,15 @@ BOOL rlv_handle_input(RLV_Control *c,
                  (int)c->viewport_bounds.MaxX,
                  (int)c->viewport_bounds.MaxY);
 
+#if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
+        /* Divider hit zone precedes sorting and body selection. */
+        if (rlv_column_resize_handle_select_down(c, event->x, event->y)) {
+            rlv_clear_arm(c);
+            RLV_BENCH_END(RLV_BENCH_KEY_EVENT_TOTAL, bench_key_total);
+            return FALSE;
+        }
+#endif
+
 #if defined(RLV_ENABLE_SORTING) && (RLV_ENABLE_SORTING != 0)
         /* Sortable column headers: never select a data row. */
         if (rlv_sort_handle_header_click(c, event->x, event->y, result)) {
@@ -987,6 +1002,17 @@ BOOL rlv_handle_input(RLV_Control *c,
          * CELL_CONTROL only (never SELECTION_CHANGED). Otherwise cancel
          * arm with no event. Does not paint.
          */
+#if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
+        if (c->resize_dragging) {
+            if (rlv_column_resize_handle_select_up(c, event->x, event->y,
+                                                   result)) {
+                RLV_BENCH_END(RLV_BENCH_KEY_EVENT_TOTAL, bench_key_total);
+                return TRUE;
+            }
+            RLV_BENCH_END(RLV_BENCH_KEY_EVENT_TOTAL, bench_key_total);
+            return FALSE;
+        }
+#endif
         if (!c->control_armed) {
             RLV_BENCH_END(RLV_BENCH_KEY_EVENT_TOTAL, bench_key_total);
             return FALSE;
@@ -1036,6 +1062,23 @@ BOOL rlv_handle_input(RLV_Control *c,
         return FALSE;
 
     case RLV_INPUT_POINTER_MOVE:
+#if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
+        if (c->resize_dragging) {
+            rlv_column_resize_handle_pointer_move(c, event->x, event->y);
+        }
+#endif
+        RLV_BENCH_END(RLV_BENCH_KEY_EVENT_TOTAL, bench_key_total);
+        return FALSE;
+
+    case RLV_INPUT_CANCEL:
+#if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
+        if (c->resize_dragging) {
+            rlv_column_resize_handle_cancel(c);
+            RLV_BENCH_END(RLV_BENCH_KEY_EVENT_TOTAL, bench_key_total);
+            return FALSE;
+        }
+#endif
+        rlv_clear_arm(c);
         RLV_BENCH_END(RLV_BENCH_KEY_EVENT_TOTAL, bench_key_total);
         return FALSE;
 

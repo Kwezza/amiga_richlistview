@@ -171,6 +171,29 @@ struct RLV_Control
     UWORD sort_direction;  /* RLV_SORT_ASC / DESC */
     UWORD sort_active;     /* 0 = identity attachment order */
 #endif
+
+#if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
+    /*
+     * Control-owned runtime content widths / minima (length == column_count).
+     * Copied from RLV_Column.width_pixels on set_columns. Layout reads these
+     * instead of borrowed columns[]. Never written back to app columns.
+     */
+    WORD *runtime_widths;
+    WORD *runtime_mins;
+    UWORD runtime_width_count;
+    BOOL column_resize_enabled;
+    /* Drag session (preview only until commit). */
+    BOOL resize_dragging;
+    BOOL resize_guide_visible;
+    UWORD resize_left_col;
+    UWORD resize_right_col;
+    WORD resize_orig_left;
+    WORD resize_orig_right;
+    WORD resize_pair_total;
+    WORD resize_preview_left_w;
+    WORD resize_guide_x;
+    WORD resize_press_x;
+#endif
 };
 
 /* Internal expand-state bits in row_expand[]. */
@@ -316,6 +339,55 @@ VOID rlv_sort_draw_indicator(RLV_Control *c,
 #else
 #define rlv_source_for_view(c, view) ((ULONG)(view))
 #define rlv_view_for_source(c, source) ((LONG)(source))
+#endif
+
+#if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
+/* Default minimum content width when no per-column override is set. */
+#define RLV_COL_RESIZE_MIN_DEFAULT  16
+/* Half-width of the divider hit zone (pixels each side of divider_x). */
+#define RLV_COL_RESIZE_HIT_SLACK    3
+
+VOID rlv_column_resize_free(RLV_Control *c);
+/* After set_columns: alloc/copy widths from borrowed columns. */
+BOOL rlv_column_resize_on_columns_set(RLV_Control *c);
+/* Erase guide / clear drag without committing (teardown, set_rows, cancel). */
+VOID rlv_column_resize_cancel(RLV_Control *c, BOOL erase_visual);
+/*
+ * SELECT_DOWN: TRUE if a divider drag was armed (consumes the click).
+ * Does not fill an application event.
+ */
+BOOL rlv_column_resize_handle_select_down(RLV_Control *c, WORD x, WORD y);
+/* POINTER_MOVE while dragging: updates preview; no event. */
+VOID rlv_column_resize_handle_pointer_move(RLV_Control *c, WORD x, WORD y);
+/*
+ * SELECT_UP while dragging: commit or no-op. TRUE if COLUMN_RESIZED filled.
+ */
+BOOL rlv_column_resize_handle_select_up(RLV_Control *c,
+                                        WORD x,
+                                        WORD y,
+                                        RLV_Event *result);
+/* CANCEL / teardown path while dragging. */
+VOID rlv_column_resize_handle_cancel(RLV_Control *c);
+
+/* Effective content width for layout (runtime copy, else column width). */
+WORD rlv_column_effective_width(const RLV_Control *c, UWORD column);
+
+/* Internal: redraw one header cell from committed geometry. */
+VOID rlv_render_header_column(RLV_Control *c, UWORD column);
+/*
+ * Redraw the intersection of one header column with screen_area (committed
+ * style). Used during resize drag to restore only an exposed strip of the
+ * right-hand column without repainting the whole pair.
+ */
+VOID rlv_render_header_column_area(RLV_Control *c,
+                                   UWORD column,
+                                   const struct Rectangle *screen_area);
+#else
+#define rlv_column_effective_width(c, column) \
+    (((c) != 0 && (c)->columns != 0 && (column) < (c)->column_count) \
+     ? ((c)->columns[(column)].width_pixels < 1 \
+        ? (WORD)1 : (c)->columns[(column)].width_pixels) \
+     : (WORD)1)
 #endif
 
 #ifdef __cplusplus

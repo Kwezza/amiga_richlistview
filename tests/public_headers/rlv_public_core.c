@@ -100,7 +100,34 @@ int main(void)
             if (event_type == 0) {
                 return 1;
             }
+            event_type = (UWORD)RLV_EVENT_COLUMN_RESIZED;
+            if (event_type == 0) {
+                return 1;
+            }
+            {
+                UWORD no_resize;
+
+                no_resize = (UWORD)RLV_COL_F_NO_RESIZE;
+                if (no_resize == 0) {
+                    return 1;
+                }
+                input_type = (UWORD)RLV_INPUT_CANCEL;
+                if (input_type == 0) {
+                    return 1;
+                }
+                ev.resize_left = 0;
+                ev.resize_right = 1;
+                ev.old_left_width = 10;
+                ev.old_right_width = 20;
+                ev.new_left_width = 12;
+                ev.new_right_width = 18;
+                if (ev.old_left_width + ev.old_right_width
+                    != ev.new_left_width + ev.new_right_width) {
+                    return 1;
+                }
+            }
             event_type = (UWORD)RLV_EVENT_NONE;
+            input_type = (UWORD)RLV_INPUT_SELECT_DOWN;
         }
     }
 

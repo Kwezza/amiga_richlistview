@@ -92,6 +92,12 @@
  *   Attached-page only (not a global catalogue sort). Header click emits
  *   RLV_EVENT_SORT_CHANGED. See rlv_set_sort_specs.
  *
+ * Optional column resizing (RLV_ENABLE_COLUMN_RESIZE, default off):
+ *   Control-owned runtime widths (never writes borrowed RLV_Column).
+ *   Two-column exchange drag with XOR guide + clipped title preview.
+ *   Header divider hit zone precedes sorting. Emits COLUMN_RESIZED.
+ *   See rlv_set_column_resize_enabled.
+ *
  * Display policies (defaults preserve historical appearance):
  *   rlv_set_row_display_mode -- COLLAPSIBLE (default) / ALWAYS_EXPANDED /
  *     SINGLE_LINE. Non-collapsible modes suppress disclosure UI but retain
@@ -252,6 +258,7 @@ typedef struct RLV_Config
 #define RLV_COL_TYPE_CHECKBOX  0x0001U
 #define RLV_COL_TYPE_DISCLOSURE 0x0002U /* +/- expand control */
 /* Higher bits of RLV_Column.flags reserved for independent behaviours. */
+#define RLV_COL_F_NO_RESIZE  0x0010U /* lock width when column resize is on */
 
 /* Compact expand-state values (CELL_CONTROL previous_value / cell_value). */
 #define RLV_CELL_COLLAPSED  0U
@@ -331,7 +338,9 @@ typedef enum RLV_InputType
     RLV_INPUT_TOGGLE,
     /* Expandable rows: Right / Left on the current row (no auto-expand). */
     RLV_INPUT_EXPAND_ROW,
-    RLV_INPUT_COLLAPSE_ROW
+    RLV_INPUT_COLLAPSE_ROW,
+    /* Cancel an in-progress column-resize drag (right button / Escape). */
+    RLV_INPUT_CANCEL
 } RLV_InputType;
 
 typedef struct RLV_InputEvent
@@ -359,8 +368,15 @@ typedef enum RLV_EventType
      * value = RLV_SORT_ASC/DESC, row = selected source row (-1 if none).
      * Does not enlarge RLV_Event. Emitted after a successful header-click
      * or programmatic sort that changes order/direction. */
-    RLV_EVENT_SORT_CHANGED
+    RLV_EVENT_SORT_CHANGED,
+    /* Optional column resize (RLV_ENABLE_COLUMN_RESIZE): see resize_*
+     * fields. value = RLV_RESIZE_REPAINT_* hint for the application. */
+    RLV_EVENT_COLUMN_RESIZED
 } RLV_EventType;
+
+/* event->value on RLV_EVENT_COLUMN_RESIZED */
+#define RLV_RESIZE_REPAINT_REGIONAL  0L
+#define RLV_RESIZE_REPAINT_FULL      1L
 
 /*
  * Optional per-column sorting (compiled when RLV_ENABLE_SORTING != 0).
@@ -453,6 +469,13 @@ typedef struct RLV_Event
     APTR  row_user_data;    /* borrowed RLV_Row.user_data for row; else NULL */
     UBYTE previous_value;   /* CELL_CONTROL prior cell value (0 if unused) */
     UBYTE cell_value;       /* CELL_CONTROL new cell value (not LONG value) */
+    /* RLV_EVENT_COLUMN_RESIZED (optional feature); else unused / zero. */
+    UWORD resize_left;      /* left column of the exchanged pair */
+    UWORD resize_right;     /* right column of the exchanged pair */
+    WORD  old_left_width;
+    WORD  old_right_width;
+    WORD  new_left_width;
+    WORD  new_right_width;
 } RLV_Event;
 
 RLV_Control *rlv_create(const RLV_Config *cfg);
@@ -688,6 +711,44 @@ BOOL rlv_clear_sort(RLV_Control *c);
 LONG rlv_source_row_of(const RLV_Control *c, LONG view_row);
 /* View/display index for a source row, or -1 if invalid. */
 LONG rlv_view_row_of(const RLV_Control *c, LONG source_row);
+
+/*
+ * Optional interactive column resizing (RLV_ENABLE_COLUMN_RESIZE).
+ * When the macro is 0, setters return FALSE / no-ops and is_active is FALSE.
+ *
+ * Runtime widths are control-owned copies of RLV_Column.width_pixels.
+ * Borrowed column structs are never written. After COLUMN_RESIZED, the
+ * application may copy new widths into its own mutable store if desired.
+ *
+ * Default: resizing disabled until rlv_set_column_resize_enabled(TRUE).
+ * Columns are resizable unless RLV_COL_F_NO_RESIZE is set. The last column
+ * has no trailing divider — a two-column exchange starts only on dividers
+ * between columns 0..n-2 and their right neighbours.
+ *
+ * Drag preview draws inside handle_input (XOR guide + clipped title) without
+ * rebuilding layout. Applications should keep delivering POINTER_MOVE (and
+ * SELECT_UP / CANCEL) while the button is held, including when the pointer
+ * leaves the control — use rlv_column_resize_is_active() with ReportMouse().
+ *
+ * On COLUMN_RESIZED, event->value is RLV_RESIZE_REPAINT_REGIONAL or _FULL.
+ * Prefer rlv_render_resized_columns for regional; otherwise full rlv_render.
+ */
+VOID rlv_set_column_resize_enabled(RLV_Control *c, BOOL enabled);
+BOOL rlv_get_column_resize_enabled(const RLV_Control *c);
+BOOL rlv_column_resize_is_active(const RLV_Control *c);
+BOOL rlv_get_column_width(const RLV_Control *c, UWORD column, WORD *out_width);
+BOOL rlv_set_column_width(RLV_Control *c, UWORD column, WORD width);
+BOOL rlv_set_column_widths(RLV_Control *c, const WORD *widths, UWORD count);
+BOOL rlv_reset_column_widths(RLV_Control *c);
+BOOL rlv_set_column_min_width(RLV_Control *c, UWORD column, WORD min_width);
+/*
+ * Regional paint after a successful COLUMN_RESIZED with REGIONAL hint:
+ * two header cells + body strip for the pair. Returns FALSE if unsafe
+ * (caller should full-repaint).
+ */
+BOOL rlv_render_resized_columns(RLV_Control *c,
+                                UWORD left_column,
+                                UWORD right_column);
 
 #ifdef __cplusplus
 }

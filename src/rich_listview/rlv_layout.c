@@ -306,7 +306,7 @@ static BOOL rlv_layout_columns(RLV_Control *c)
     inset = (WORD)c->cell_padding_x;
 
     for (i = 0; i < c->column_count; i++) {
-        w = c->columns[i].width_pixels;
+        w = rlv_column_effective_width(c, i);
         if (w < 1) {
             w = 1;
         }

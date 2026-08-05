@@ -174,6 +174,7 @@ rich-listview-demo
 rich-listview-demo-log
 rich-listview-demo-bench
 rich-listview-demo-nosmart
+rich-listview-demo-console
 ```
 
 A change is not validated merely because it compiles. Report separately whether it was:
