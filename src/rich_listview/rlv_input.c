@@ -1065,6 +1065,8 @@ BOOL rlv_handle_input(RLV_Control *c,
 #if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
         if (c->resize_dragging) {
             rlv_column_resize_handle_pointer_move(c, event->x, event->y);
+        } else if (c->column_resize_enabled) {
+            rlv_column_resize_handle_hover_move(c, event->x, event->y);
         }
 #endif
         RLV_BENCH_END(RLV_BENCH_KEY_EVENT_TOTAL, bench_key_total);

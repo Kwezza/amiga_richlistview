@@ -3,8 +3,9 @@
  *
  * Two-column exchange: dragging the divider between columns L and R adjusts
  * only those widths so L+R stays constant and later columns keep the same X.
- * Live preview uses a reversible XOR vertical guide and a clipped
- * high-contrast left-header title without rebuilding wrap/layout.
+ * Live preview paints both affected header interiors (no full-header redraw,
+ * no sort glyphs), a moving header divider, and a body-only reversible
+ * COMPLEMENT guide — without rebuilding wrap/layout.
  */
 
 #include "rich_listview/rlv_internal.h"
@@ -14,6 +15,11 @@
 #include <string.h>
 
 #if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
+
+static BOOL rlv_cr_hit_divider(const RLV_Control *c,
+                               WORD x,
+                               WORD y,
+                               UWORD *left_out);
 
 static UWORD rlv_cr_strlen(CONST_STRPTR s)
 {
@@ -76,7 +82,31 @@ VOID rlv_column_resize_free(RLV_Control *c)
     }
     c->runtime_width_count = 0;
     c->resize_dragging = FALSE;
+    c->resize_pointer_wanted = FALSE;
     c->resize_guide_visible = FALSE;
+}
+
+static VOID rlv_cr_set_pointer_wanted(RLV_Control *c, BOOL wanted)
+{
+    if (c == 0) {
+        return;
+    }
+    c->resize_pointer_wanted = wanted ? TRUE : FALSE;
+}
+
+static VOID rlv_cr_clear_pointer_wanted(RLV_Control *c)
+{
+    rlv_cr_set_pointer_wanted(c, FALSE);
+}
+
+static VOID rlv_cr_update_hover(RLV_Control *c, WORD x, WORD y)
+{
+    UWORD dummy;
+
+    if (c == 0 || c->resize_dragging || !c->column_resize_enabled) {
+        return;
+    }
+    rlv_cr_set_pointer_wanted(c, rlv_cr_hit_divider(c, x, y, &dummy));
 }
 
 static BOOL rlv_cr_column_locked(const RLV_Control *c, UWORD column)
@@ -136,6 +166,10 @@ BOOL rlv_column_resize_on_columns_set(RLV_Control *c)
     return TRUE;
 }
 
+/*
+ * Body-only reversible guide (COMPLEMENT). Header uses a normal-pen moving
+ * divider; the guide must not damage the fixed title bevel.
+ */
 static VOID rlv_cr_xor_guide(RLV_Control *c, WORD x)
 {
     const RLV_DrawOps *ops;
@@ -146,7 +180,7 @@ static VOID rlv_cr_xor_guide(RLV_Control *c, WORD x)
         return;
     }
     ops = c->draw_ops;
-    y1 = c->header_bounds.MinY;
+    y1 = c->viewport_bounds.MinY;
     y2 = c->viewport_bounds.MaxY;
     if (y2 < y1) {
         return;
@@ -173,220 +207,40 @@ static VOID rlv_cr_draw_guide(RLV_Control *c, WORD x)
     c->resize_guide_visible = TRUE;
 }
 
-/*
- * Grey-fill a vertical strip inside the header face (inset 1px from frame).
- * x_lo/x_hi are inclusive window X; empty or inverted ranges are no-ops.
- */
-static VOID rlv_cr_fill_header_strip(RLV_Control *c, WORD x_lo, WORD x_hi)
+/* Inclusive right edge of a header cell (matches rlv_render cell framing). */
+static WORD rlv_cr_cell_right(const RLV_Control *c, UWORD column)
 {
-    const RLV_DrawOps *ops;
-    WORD fy1;
-    WORD fy2;
-
-    if (c == 0 || c->draw_ops == 0 || x_hi < x_lo) {
-        return;
+    if (c == 0 || c->col_geom == 0 || column >= c->column_count) {
+        return 0;
     }
-    ops = c->draw_ops;
-    fy1 = (WORD)(c->header_bounds.MinY + 1);
-    fy2 = (WORD)(c->header_bounds.MaxY - 1);
-    if (fy2 < fy1) {
-        return;
+    if (c->divider_x != 0 && column < c->divider_count) {
+        return c->divider_x[column];
     }
-    ops->set_pens(c->draw_context, c->pens.background, c->pens.background);
-    ops->fill_rect(c->draw_context, x_lo, fy1, x_hi, fy2);
+    return c->col_geom[column].right;
 }
 
 /*
- * Preview left title: grey face to proposed width, then shine text clipped
- * to that face. Does not paint committed (black) titles.
+ * Symmetric step quantisation relative to the press origin.
+ * Toward-zero buckets: |delta| < step stays 0; avoids C truncating
+ * toward zero asymmetrically when using a single signed division.
  */
-static VOID rlv_cr_paint_white_title(RLV_Control *c, WORD proposed_left_w)
+static LONG rlv_cr_quantize_delta(LONG delta)
 {
-    const RLV_DrawOps *ops;
-    APTR ctx;
-    UWORD left;
-    WORD x1;
-    WORD x2;
-    WORD y1;
-    WORD y2;
-    WORD guide;
-    WORD text_left;
-    WORD text_right;
-    WORD baseline;
-    CONST_STRPTR title;
-    UWORD len;
-    UWORD fit;
-    UWORD max_w;
-    UWORD tw;
-    WORD tx;
-    WORD fx1;
-    WORD fy1;
-    WORD fx2;
-    WORD fy2;
-    struct Rectangle clip;
-    RLV_PixelColumn geom;
+    LONG step;
+    LONG ad;
+    LONG q;
 
-    if (c == 0 || c->draw_ops == 0 || c->col_geom == 0) {
-        return;
+    step = (LONG)RLV_COLUMN_RESIZE_STEP;
+    if (step < 1L) {
+        return delta;
     }
-
-    left = c->resize_left_col;
-    if (left >= c->column_count) {
-        return;
-    }
-
-    ops = c->draw_ops;
-    ctx = c->draw_context;
-    y1 = c->header_bounds.MinY;
-    y2 = c->header_bounds.MaxY;
-    x1 = c->col_geom[left].left;
-    guide = (WORD)(x1 + proposed_left_w);
-    if (guide <= x1) {
-        return;
-    }
-    x2 = (WORD)(guide - 1);
-
-    /*
-     * Preview fill matches normal header grey. Inset by one pixel so the
-     * title-cell frame is not erased. Title uses shine for drag contrast.
-     */
-    fx1 = (WORD)(x1 + 1);
-    fy1 = (WORD)(y1 + 1);
-    fx2 = (WORD)(x2 - 1);
-    fy2 = (WORD)(y2 - 1);
-    if (fx2 >= fx1 && fy2 >= fy1) {
-        ops->set_pens(ctx, c->pens.background, c->pens.background);
-        ops->fill_rect(ctx, fx1, fy1, fx2, fy2);
-    }
-
-    geom = c->col_geom[left];
-    text_left = (WORD)(x1 + (WORD)c->cell_padding_x);
-    text_right = (WORD)(x2 - (WORD)c->cell_padding_x);
-    if (text_right < text_left) {
-        return;
-    }
-    geom.left = x1;
-    geom.right = x2;
-    geom.text_left = text_left;
-    geom.text_right = text_right;
-
-    title = (c->columns != 0) ? c->columns[left].title : 0;
-    if (title == 0 || title[0] == '\0') {
-        return;
-    }
-
-    baseline = (WORD)(y1 + (WORD)c->cell_padding_y
-                      + c->font_metrics.baseline);
-    len = rlv_cr_strlen(title);
-    max_w = (UWORD)(text_right - text_left + 1);
-    if (ops->text_fit != 0) {
-        fit = ops->text_fit(ctx, title, len, max_w);
+    if (delta >= 0L) {
+        q = (delta / step) * step;
     } else {
-        fit = len;
-        while (fit > 0 && ops->text_width(ctx, title, fit) > max_w) {
-            fit--;
-        }
+        ad = -delta;
+        q = -((ad / step) * step);
     }
-    if (fit == 0) {
-        return;
-    }
-
-    tw = ops->text_width(ctx, title, fit);
-    tx = text_left;
-    if (geom.alignment == (UWORD)RLV_CELL_ALIGN_CENTER) {
-        tx = (WORD)(text_left + ((WORD)(text_right - text_left + 1
-                                        - (WORD)tw) / 2));
-    } else if (geom.alignment == (UWORD)RLV_CELL_ALIGN_RIGHT) {
-        tx = (WORD)(text_right - (WORD)tw + 1);
-    }
-    if (tx < text_left) {
-        tx = text_left;
-    }
-
-    clip.MinX = text_left;
-    clip.MinY = (WORD)(y1 + 1);
-    clip.MaxX = text_right;
-    clip.MaxY = (WORD)(y2 - 1);
-    if (clip.MaxY < clip.MinY) {
-        clip.MinY = y1;
-        clip.MaxY = y2;
-    }
-    if (ops->push_clip != 0 && ops->push_clip(ctx, &clip)) {
-        ops->set_pens(ctx, c->pens.shine, c->pens.background);
-        ops->draw_text(ctx, tx, baseline, title, fit);
-        if (ops->pop_clip != 0) {
-            ops->pop_clip(ctx);
-        }
-    } else {
-        ops->set_pens(ctx, c->pens.shine, c->pens.background);
-        ops->draw_text(ctx, tx, baseline, title, fit);
-    }
-}
-
-/*
- * On shrink, repair the strip the guide vacated. Left-of-divider stays in
- * preview grey; pixels at/after the committed divider restore the right
- * header via a clipped area paint (not a full column redraw).
- * Expand needs no strip work — white-title fill covers the new interior.
- */
-static VOID rlv_cr_paint_preview_delta(RLV_Control *c, WORD old_w, WORD new_w)
-{
-    UWORD left;
-    UWORD right;
-    WORD x1;
-    WORD old_guide;
-    WORD new_guide;
-    WORD strip_lo;
-    WORD strip_hi;
-    WORD grey_hi;
-    WORD div_x;
-    struct Rectangle area;
-
-    if (c == 0 || c->col_geom == 0 || c->divider_x == 0) {
-        return;
-    }
-    if (new_w >= old_w) {
-        return;
-    }
-
-    left = c->resize_left_col;
-    right = c->resize_right_col;
-    if (left >= c->column_count || right >= c->column_count
-        || left >= c->divider_count) {
-        return;
-    }
-
-    x1 = c->col_geom[left].left;
-    old_guide = (WORD)(x1 + old_w);
-    new_guide = (WORD)(x1 + new_w);
-    strip_lo = new_guide;
-    strip_hi = (WORD)(old_guide - 1);
-    if (strip_hi < strip_lo) {
-        return;
-    }
-
-    div_x = c->divider_x[left];
-
-    /* Preview territory left of the committed divider — grey only. */
-    grey_hi = strip_hi;
-    if (grey_hi >= div_x) {
-        grey_hi = (WORD)(div_x - 1);
-    }
-    if (grey_hi >= strip_lo) {
-        rlv_cr_fill_header_strip(c, strip_lo, grey_hi);
-    }
-
-    /* Exposed strip in/after the divider — restore right header strip. */
-    if (strip_hi >= div_x) {
-        area.MinX = strip_lo;
-        if (area.MinX < div_x) {
-            area.MinX = div_x;
-        }
-        area.MaxX = strip_hi;
-        area.MinY = c->header_bounds.MinY;
-        area.MaxY = c->header_bounds.MaxY;
-        rlv_render_header_column_area(c, right, &area);
-    }
+    return q;
 }
 
 static WORD rlv_cr_clamp_left(const RLV_Control *c, WORD proposed)
@@ -415,14 +269,16 @@ static WORD rlv_cr_clamp_left(const RLV_Control *c, WORD proposed)
 
 static WORD rlv_cr_proposed_from_x(const RLV_Control *c, WORD x)
 {
-    LONG delta;
+    LONG raw_delta;
+    LONG snapped_delta;
     LONG proposed;
 
     if (c == 0 || c->col_geom == 0) {
         return 0;
     }
-    delta = (LONG)x - (LONG)c->resize_press_x;
-    proposed = (LONG)c->resize_orig_left + delta;
+    raw_delta = (LONG)x - (LONG)c->resize_press_x;
+    snapped_delta = rlv_cr_quantize_delta(raw_delta);
+    proposed = (LONG)c->resize_orig_left + snapped_delta;
     if (proposed < 1L) {
         proposed = 1L;
     }
@@ -430,6 +286,214 @@ static WORD rlv_cr_proposed_from_x(const RLV_Control *c, WORD x)
         proposed = 32767L;
     }
     return rlv_cr_clamp_left(c, (WORD)proposed);
+}
+
+/*
+ * Shine title inside [text_left, text_right], clipped. No sort reserve.
+ * Alignment comes from the column's committed geometry policy.
+ */
+static VOID rlv_cr_draw_preview_title(RLV_Control *c,
+                                     UWORD column,
+                                     WORD text_left,
+                                     WORD text_right,
+                                     WORD y1,
+                                     WORD y2,
+                                     WORD baseline)
+{
+    const RLV_DrawOps *ops;
+    APTR ctx;
+    CONST_STRPTR title;
+    UWORD len;
+    UWORD fit;
+    UWORD max_w;
+    UWORD tw;
+    WORD tx;
+    UWORD alignment;
+    struct Rectangle clip;
+
+    if (c == 0 || c->draw_ops == 0 || text_right < text_left
+        || column >= c->column_count) {
+        return;
+    }
+
+    ops = c->draw_ops;
+    ctx = c->draw_context;
+    title = (c->columns != 0) ? c->columns[column].title : 0;
+    if (title == 0 || title[0] == '\0') {
+        return;
+    }
+
+    alignment = (UWORD)RLV_CELL_ALIGN_LEFT;
+    if (c->col_geom != 0) {
+        alignment = c->col_geom[column].alignment;
+    }
+
+    len = rlv_cr_strlen(title);
+    max_w = (UWORD)(text_right - text_left + 1);
+    if (ops->text_fit != 0) {
+        fit = ops->text_fit(ctx, title, len, max_w);
+    } else {
+        fit = len;
+        while (fit > 0 && ops->text_width(ctx, title, fit) > max_w) {
+            fit--;
+        }
+    }
+    if (fit == 0) {
+        return;
+    }
+
+    tw = ops->text_width(ctx, title, fit);
+    tx = text_left;
+    if (alignment == (UWORD)RLV_CELL_ALIGN_CENTER) {
+        tx = (WORD)(text_left + ((WORD)(text_right - text_left + 1
+                                        - (WORD)tw) / 2));
+    } else if (alignment == (UWORD)RLV_CELL_ALIGN_RIGHT) {
+        tx = (WORD)(text_right - (WORD)tw + 1);
+    }
+    if (tx < text_left) {
+        tx = text_left;
+    }
+
+    clip.MinX = text_left;
+    clip.MinY = (WORD)(y1 + 1);
+    clip.MaxX = text_right;
+    clip.MaxY = (WORD)(y2 - 1);
+    if (clip.MaxY < clip.MinY) {
+        clip.MinY = y1;
+        clip.MaxY = y2;
+    }
+
+    if (ops->push_clip != 0 && ops->push_clip(ctx, &clip)) {
+        ops->set_pens(ctx, c->pens.shine, c->pens.background);
+        ops->draw_text(ctx, tx, baseline, title, fit);
+        if (ops->pop_clip != 0) {
+            ops->pop_clip(ctx);
+        }
+    } else {
+        ops->set_pens(ctx, c->pens.shine, c->pens.background);
+        ops->draw_text(ctx, tx, baseline, title, fit);
+    }
+}
+
+/*
+ * Dedicated drag-preview header pass for the two affected columns.
+ * Clears only the combined interior (fixed 3D outer bevels untouched),
+ * paints both titles in shine-on-grey, draws the moving divider, and
+ * never invokes the ordinary header renderer or sort indicator.
+ */
+static VOID rlv_cr_paint_pair_preview(RLV_Control *c, WORD proposed_left_w)
+{
+    const RLV_DrawOps *ops;
+    APTR ctx;
+    UWORD left;
+    UWORD right;
+    WORD pair_left;
+    WORD pair_right;
+    WORD guide;
+    WORD right_left;
+    WORD right_w;
+    WORD y1;
+    WORD y2;
+    WORD fy1;
+    WORD fy2;
+    WORD fx1;
+    WORD fx2;
+    WORD baseline;
+    WORD pad;
+    WORD left_text_l;
+    WORD left_text_r;
+    WORD right_text_l;
+    WORD right_text_r;
+    WORD left_content_r;
+    WORD right_content_r;
+
+    if (c == 0 || c->draw_ops == 0 || c->col_geom == 0) {
+        return;
+    }
+
+    left = c->resize_left_col;
+    right = c->resize_right_col;
+    if (left >= c->column_count || right >= c->column_count) {
+        return;
+    }
+
+    ops = c->draw_ops;
+    ctx = c->draw_context;
+    y1 = c->header_bounds.MinY;
+    y2 = c->header_bounds.MaxY;
+    if (y2 < y1) {
+        return;
+    }
+
+    pair_left = c->col_geom[left].left;
+    pair_right = rlv_cr_cell_right(c, right);
+    guide = (WORD)(pair_left + proposed_left_w);
+    if (guide <= pair_left || guide >= pair_right) {
+        RLV_LOGF("INVARIANT COLUMN_RESIZE preview guide=%d pair=%d..%d",
+                 (int)guide, (int)pair_left, (int)pair_right);
+        return;
+    }
+
+    right_left = (WORD)(guide + (WORD)RLV_DIVIDER_WIDTH);
+    right_w = (WORD)(c->resize_pair_total - proposed_left_w);
+    if (right_w < 1 || right_left > pair_right) {
+        RLV_LOG("INVARIANT COLUMN_RESIZE preview right geometry");
+        return;
+    }
+
+    /* Combined interior: exclude fixed outer bevel pixels. */
+    fx1 = (WORD)(pair_left + 1);
+    fx2 = (WORD)(pair_right - 1);
+    fy1 = (WORD)(y1 + 1);
+    fy2 = (WORD)(y2 - 1);
+    if (fx2 < fx1 || fy2 < fy1) {
+        RLV_LOG("INVARIANT COLUMN_RESIZE preview interior empty");
+        return;
+    }
+
+    ops->set_pens(ctx, c->pens.background, c->pens.background);
+    ops->fill_rect(ctx, fx1, fy1, fx2, fy2);
+
+    pad = (WORD)c->cell_padding_x;
+    left_content_r = (WORD)(guide - 1);
+    right_content_r = (WORD)(right_left + right_w - 1);
+    if (right_content_r > pair_right) {
+        right_content_r = pair_right;
+    }
+
+    left_text_l = (WORD)(pair_left + pad);
+    left_text_r = (WORD)(left_content_r - pad);
+    right_text_l = (WORD)(right_left + pad);
+    right_text_r = (WORD)(right_content_r - pad);
+
+    baseline = (WORD)(y1 + (WORD)c->cell_padding_y
+                      + c->font_metrics.baseline);
+
+    /* Left title, then moving divider, then right title (tight pass). */
+    if (left_text_r >= left_text_l) {
+        rlv_cr_draw_preview_title(c, left, left_text_l, left_text_r,
+                                  y1, y2, baseline);
+    }
+
+    /*
+     * Moving header divider matches adjacent cell framing: dark right edge
+     * of the left cell at guide, shine left edge of the right cell at
+     * guide+DIVIDER_WIDTH. Verticals stay inside the interior so the
+     * fixed top/bottom bevels are not overwritten.
+     */
+    if (guide >= fx1 && guide <= fx2) {
+        ops->set_pens(ctx, c->pens.separator, c->pens.background);
+        ops->draw_line(ctx, guide, fy1, guide, fy2);
+    }
+    if (right_left >= fx1 && right_left <= fx2) {
+        ops->set_pens(ctx, c->pens.shine, c->pens.background);
+        ops->draw_line(ctx, right_left, fy1, right_left, fy2);
+    }
+
+    if (right_text_r >= right_text_l) {
+        rlv_cr_draw_preview_title(c, right, right_text_l, right_text_r,
+                                  y1, y2, baseline);
+    }
 }
 
 VOID rlv_column_resize_cancel(RLV_Control *c, BOOL erase_visual)
@@ -450,6 +514,7 @@ VOID rlv_column_resize_cancel(RLV_Control *c, BOOL erase_visual)
         }
     }
     c->resize_dragging = FALSE;
+    rlv_cr_clear_pointer_wanted(c);
     c->resize_guide_visible = FALSE;
 }
 
@@ -534,6 +599,7 @@ BOOL rlv_column_resize_handle_select_down(RLV_Control *c, WORD x, WORD y)
     }
 
     c->resize_dragging = TRUE;
+    rlv_cr_set_pointer_wanted(c, TRUE);
     c->resize_left_col = left;
     c->resize_right_col = right;
     c->resize_orig_left = wl;
@@ -547,17 +613,26 @@ BOOL rlv_column_resize_handle_select_down(RLV_Control *c, WORD x, WORD y)
     RLV_LOGF("COLUMN_RESIZE arm left=%u right=%u wL=%d wR=%d",
              (unsigned)left, (unsigned)right, (int)wl, (int)wr);
 
-    /* Initial guide at the committed divider, then enter preview style. */
+    /* Initial body guide at the committed divider, then pair preview. */
+    rlv_cr_paint_pair_preview(c, wl);
     rlv_cr_draw_guide(c, c->resize_guide_x);
-    rlv_cr_paint_white_title(c, wl);
     return TRUE;
+}
+
+VOID rlv_column_resize_handle_hover_move(RLV_Control *c, WORD x, WORD y)
+{
+    if (c == 0 || c->resize_dragging || !c->column_resize_enabled) {
+        return;
+    }
+    rlv_cr_update_hover(c, x, y);
 }
 
 VOID rlv_column_resize_handle_pointer_move(RLV_Control *c, WORD x, WORD y)
 {
     WORD proposed;
     WORD guide;
-    WORD old_w;
+    LONG raw_delta;
+    LONG snapped_delta;
 
     if (c == 0 || !c->resize_dragging || c->col_geom == 0) {
         return;
@@ -572,12 +647,15 @@ VOID rlv_column_resize_handle_pointer_move(RLV_Control *c, WORD x, WORD y)
         return;
     }
 
-    old_w = c->resize_preview_left_w;
+    raw_delta = (LONG)x - (LONG)c->resize_press_x;
+    snapped_delta = rlv_cr_quantize_delta(raw_delta);
     guide = (WORD)(c->col_geom[c->resize_left_col].left + proposed);
+    RLV_LOGF("COLUMN_RESIZE preview raw_d=%ld snap_d=%ld w=%d->%d guide=%d",
+             (long)raw_delta, (long)snapped_delta,
+             (int)c->resize_preview_left_w, (int)proposed, (int)guide);
 
     rlv_cr_erase_guide(c);
-    rlv_cr_paint_preview_delta(c, old_w, proposed);
-    rlv_cr_paint_white_title(c, proposed);
+    rlv_cr_paint_pair_preview(c, proposed);
     rlv_cr_draw_guide(c, guide);
 
     c->resize_preview_left_w = proposed;
@@ -644,6 +722,7 @@ BOOL rlv_column_resize_handle_select_up(RLV_Control *c,
         RLV_LOG("COLUMN_RESIZE commit unchanged");
         c->resize_dragging = FALSE;
         c->resize_guide_visible = FALSE;
+        rlv_cr_update_hover(c, x, y);
         return FALSE;
     }
 
@@ -651,6 +730,7 @@ BOOL rlv_column_resize_handle_select_up(RLV_Control *c,
         || left >= c->runtime_width_count
         || right >= c->runtime_width_count) {
         c->resize_dragging = FALSE;
+        rlv_cr_clear_pointer_wanted(c);
         return FALSE;
     }
 
@@ -659,6 +739,7 @@ BOOL rlv_column_resize_handle_select_up(RLV_Control *c,
     c->runtime_widths[right] = new_right;
     c->resize_dragging = FALSE;
     c->resize_guide_visible = FALSE;
+    rlv_cr_update_hover(c, x, y);
 
     rlv_layout_invalidate(c);
     if (!rlv_layout_rebuild(c)) {
@@ -707,8 +788,12 @@ VOID rlv_set_column_resize_enabled(RLV_Control *c, BOOL enabled)
     if (c == 0) {
         return;
     }
-    if (!enabled && c->resize_dragging) {
-        rlv_column_resize_cancel(c, TRUE);
+    if (!enabled) {
+        if (c->resize_dragging) {
+            rlv_column_resize_cancel(c, TRUE);
+        } else {
+            rlv_cr_clear_pointer_wanted(c);
+        }
     }
     c->column_resize_enabled = enabled ? TRUE : FALSE;
     RLV_LOGF("COLUMN_RESIZE enabled=%d", (int)c->column_resize_enabled);
@@ -728,6 +813,23 @@ BOOL rlv_column_resize_is_active(const RLV_Control *c)
         return FALSE;
     }
     return c->resize_dragging;
+}
+
+BOOL rlv_column_resize_wants_pointer(const RLV_Control *c)
+{
+    if (c == 0 || !c->column_resize_enabled) {
+        return FALSE;
+    }
+    return c->resize_pointer_wanted;
+}
+
+BOOL rlv_column_resize_needs_report_mouse(const RLV_Control *c)
+{
+    if (c == 0 || !c->column_resize_enabled) {
+        return FALSE;
+    }
+    /* Hover detection and drag tracking both require MOUSEMOVE delivery. */
+    return TRUE;
 }
 
 BOOL rlv_get_column_width(const RLV_Control *c, UWORD column, WORD *out_width)

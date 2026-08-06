@@ -13,6 +13,8 @@
 #include <graphics/gfx.h>
 #include <graphics/rastport.h>
 #include <graphics/text.h>
+#include <intuition/intuition.h>
+#include <intuition/intuitionbase.h>
 #include <intuition/screens.h>
 
 #ifdef __cplusplus
@@ -45,6 +47,15 @@ APTR rlv_backend_v36_get_context(RLV_BackendV36 *backend);
 /** Map DrawInfo pens into semantic RLV_Pens roles. */
 VOID rlv_backend_v36_pens_from_drawinfo(const struct DrawInfo *dri,
                                         RLV_Pens *out_pens);
+
+#if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
+/*
+ * Install or clear the column-resize pointer on win (SetPointer / ClearPointer,
+ * V36-compatible). Tracks installed state; skips redundant API calls.
+ */
+VOID rlv_backend_v36_sync_column_resize_pointer(struct Window *win, BOOL want);
+VOID rlv_backend_v36_clear_column_resize_pointer(struct Window *win);
+#endif
 
 #ifdef __cplusplus
 }

@@ -360,7 +360,8 @@ EXAMPLE_SORT_RESIZE_LOG_OBJ = $(RLV_SORT_RESIZE_LOG_DIR)/examples/rich_listview_
 	rich-listview-demo-sort-resize rich-listview-demo-sort-resize-log \
 	rich-listview-demo-console \
 	help \
-	public-header-audit
+	public-header-audit \
+	column-resize-geometry-test
 
 all: rich-listview-demo
 
@@ -382,6 +383,7 @@ help:
 	@echo   rich-listview-demo-sort-resize  Sorting + column resize
 	@echo   rich-listview-demo-sort-resize-log  Sorting + resize + logging
 	@echo   public-header-audit             Compile-only audit for public headers
+	@echo   column-resize-geometry-test     Host clamp/snap/preview rect checks
 	@echo   clean                            Remove build/ and bin/
 	@echo.
 
@@ -475,6 +477,19 @@ public-header-audit: $(DIRS) \
 $(BUILD_DIR)/tests/public_headers/%.o: tests/public_headers/%.c | $(BUILD_DIR)/tests/public_headers
 	$(CC) $(RLV_CFLAGS) -c -o $@ $<
 
+# Host-side math checks (no Amiga libs). Prefer gcc/cc; cl needs VS env.
+column-resize-geometry-test: $(DIRS)
+	@powershell -NoProfile -Command "\
+		$$out = '$(BIN_DIR)/test_resize_math.exe'; \
+		$$src = 'tests/column_resize/test_resize_math.c'; \
+		if (Get-Command gcc -ErrorAction SilentlyContinue) { \
+			& gcc -Wall -Wextra -I. -o $$out $$src; if ($$LASTEXITCODE -ne 0) { exit $$LASTEXITCODE } \
+		} elseif (Get-Command cc -ErrorAction SilentlyContinue) { \
+			& cc -Wall -Wextra -I. -o $$out $$src; if ($$LASTEXITCODE -ne 0) { exit $$LASTEXITCODE } \
+		} elseif (Get-Command cl -ErrorAction SilentlyContinue) { \
+			& cl /nologo /W3 /I. $$src /Fe:$$out; if ($$LASTEXITCODE -ne 0) { exit $$LASTEXITCODE } \
+		} else { Write-Error 'Need gcc, cc, or cl for host test'; exit 1 }; \
+		& $$out; exit $$LASTEXITCODE"
 
 rich-listview-demo: $(DIRS) $(BIN_DIR)/rich-listview-demo
 rich-listview-demo-log: $(DIRS) $(BIN_DIR)/rich-listview-demo-log

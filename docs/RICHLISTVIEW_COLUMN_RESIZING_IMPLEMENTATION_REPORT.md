@@ -131,17 +131,22 @@ the event or from `rlv_get_column_width` into their own store.
 
 ```text
 idle
+  POINTER_MOVE on divider (±3 px header hit, unlocked pair)
+    → resize_pointer_wanted; host SetPointer()
+  POINTER_MOVE leaves divider
+    → idle; host ClearPointer()
   SELECT_DOWN on divider (±3 px, both columns unlocked, feature enabled)
-    → arm; draw initial XOR guide; paint white clipped title (no black
-      restore); consume click (no sort / selection)
+    → arm; keep resize pointer; draw initial XOR guide; pair preview;
+      consume click (no sort / selection)
   POINTER_MOVE while armed
-    → erase guide; dirty-strip delta (grey / right-strip restore only);
-      white clipped title at proposed width; draw guide (no layout rebuild,
-      no full left/right header restore, no black title mid-drag)
+    → if snapped width unchanged: no draw; else erase body guide;
+      dedicated pair-preview (both titles, moving header divider, no sort);
+      draw body guide (no layout rebuild)
   SELECT_UP while armed
-    → erase guide; commit widths; layout rebuild; COLUMN_RESIZED
-  CANCEL / set_rows / set_columns / set_bounds / destroy
-    → erase guide; restore headers; leave widths unchanged
+    → erase guide; commit widths; layout rebuild; COLUMN_RESIZED;
+      re-evaluate hover at release position
+  CANCEL / set_rows / set_columns / set_bounds / destroy / window inactive
+    → erase guide; restore headers; ClearPointer(); leave widths unchanged
 ```
 
 Divider hit-testing runs **before** `rlv_sort_handle_header_click`.
@@ -150,16 +155,23 @@ Divider hit-testing runs **before** `rlv_sort_handle_header_click`.
 
 ## 8. Guide and title preview
 
-- Guide: `draw_xor_vline` from header top through viewport bottom
-  (V36: `SetDrMd(COMPLEMENT)`, pens/mode restored).
-- Title: fill proposed left width with `background` (same grey as the header
-  face), draw title with `shine` (system light/white), clipped via
-  `push_clip` / `text_fit` to the temporary width.
-- Drag moves stay in preview mode: never call `rlv_render_header_column` for
-  the pair. Shrink exposes a strip; left-of-divider is grey-filled, and any
-  strip at/after the committed `divider_x` is restored with
-  `rlv_render_header_column_area` (right column ∩ strip only).
+Live drag uses a **dedicated pair-preview** path (not the ordinary header
+renderer):
+
+- **Body guide:** `draw_xor_vline` from `viewport_bounds.MinY` through
+  `MaxY` only (V36: `SetDrMd(COMPLEMENT)`, pens/mode restored). Erase =
+  draw the same segment again.
+- **Header:** clear the combined interior of the two affected cells (1 px
+  inset so outer 3D bevels stay), paint **both** titles with `shine` on
+  `background`, clip via `push_clip` / `text_fit`, draw a moving 3D-style
+  divider at the snapped X. Sort indicators are omitted until commit/cancel.
+- **Quantisation:** `RLV_COLUMN_RESIZE_STEP` (4) relative to press X;
+  symmetric toward-zero buckets; preview and commit share the snapped width.
+- Shrink no longer calls `rlv_render_header_column_area` (that path flashed
+  the committed divider via `rlv_draw_cell_frame`).
 - Body cells stay at committed geometry during the drag.
+
+See `docs/RICHLISTVIEW_COLUMN_RESIZE_PREVIEW_REFINEMENT_REPORT.md`.
 
 ---
 
@@ -167,7 +179,7 @@ Divider hit-testing runs **before** `rlv_sort_handle_header_click`.
 
 | Phase | Work |
 |-------|------|
-| Drag move | XOR + dirty header strip(s) + white title — no wrap/layout |
+| Drag move | Body XOR + pair header preview — no wrap/layout |
 | Commit | Update runtime widths → invalidate → rebuild |
 | Regional | Both columns `WRAP_NONE` **and** `content_height` unchanged →
   `rlv_render_resized_columns` (two headers + body strip) |
@@ -221,11 +233,15 @@ set_bounds, and destroy (destroy skips visual erase when tearing down).
 
 | Binary | Bytes | Delta vs baseline |
 |--------|------:|-------------------|
-| `rich-listview-demo` | 57360 | — |
-| `rich-listview-demo-colresize` | 62640 | **+5280** |
-| `rich-listview-demo-sort` | 63700 | — |
-| `rich-listview-demo-sort-resize` | 69088 | **+5388** vs sort |
-| `rlv_column_resize.o` | ~7036 | — |
+| `rich-listview-demo` | 57412 | — |
+| `rich-listview-demo-colresize` | 63996 | **+6584** |
+| `rich-listview-demo-sort` | 63700 | — (prior) |
+| `rich-listview-demo-sort-resize` | 70648 | **+~6.9K** vs sort |
+| `rlv_column_resize.o` | ~8004 | after preview refinement |
+
+Preview refinement alone: about **+1.3–1.6 KB** on resize-enabled demos
+versus the first column-resize report baselines (62640 / 69088). See
+`RICHLISTVIEW_COLUMN_RESIZE_PREVIEW_REFINEMENT_REPORT.md`.
 
 ---
 
@@ -235,8 +251,13 @@ set_bounds, and destroy (destroy skips visual erase when tearing down).
 - No trailing elastic resize past the last column.
 - Preview requires `draw_xor_vline`; without it the guide is skipped (title
   preview still paints).
-- Apps must forward `POINTER_MOVE` while dragging (demo uses
-  `WFLG_REPORTMOUSE`).
+- Apps must forward `POINTER_MOVE` while column resize is enabled (demo uses
+  `WFLG_REPORTMOUSE` via `rlv_column_resize_needs_report_mouse()`).
+- A horizontal resize pointer is shown over valid title dividers and kept
+  during drags. The host installs it with V36 `SetPointer()` /
+  `ClearPointer()` when `rlv_column_resize_wants_pointer()` is TRUE (see
+  `rlv_backend_v36_sync_column_resize_pointer()` in the demo). Pointer code
+  and state compile out with `RLV_ENABLE_COLUMN_RESIZE=0`.
 - Regional paint heuristic uses wrap mode + content height only.
 
 ---

@@ -192,9 +192,11 @@ When `RLV_ENABLE_COLUMN_RESIZE=1` (see `make rich-listview-demo-colresize` or
    total stays constant; later columns keep the same X. Mark locked columns
    with `RLV_COL_F_NO_RESIZE`.
 4. Live preview draws an XOR guide and a clipped white (`shine`) title on
-   the normal grey header face inside `handle_input` without rebuilding layout. Keep delivering
-   `POINTER_MOVE` / `SELECT_UP` / `CANCEL` while the button is held
-   (`rlv_column_resize_is_active` + `WFLG_REPORTMOUSE` in the demo).
+   the normal grey header face inside `handle_input` without rebuilding layout.
+   Forward `POINTER_MOVE` while resize is enabled (`rlv_column_resize_needs_report_mouse`
+   + `WFLG_REPORTMOUSE` in the demo). A horizontal resize pointer appears over
+   valid dividers and stays active during drags (`rlv_column_resize_wants_pointer`
+   + V36 `SetPointer()` in the demo/backend).
 5. Release emits `RLV_EVENT_COLUMN_RESIZED` with old/new widths and a
    regional vs full repaint hint. Right button / `RLV_INPUT_CANCEL` aborts.
 

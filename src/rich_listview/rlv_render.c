@@ -468,7 +468,9 @@ static BOOL rlv_intersect_rects(const struct Rectangle *a,
 #if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
 /*
  * Restore committed header imagery only inside screen_area ∩ column cell.
- * Clip + full cell paint (fill/frame/text/indicator); clip trims to the strip.
+ * Clip + full cell paint (fill/frame/text/indicator). Kept for regional
+ * repair; live resize preview no longer calls this (it flashed the
+ * committed divider via rlv_draw_cell_frame).
  */
 VOID rlv_render_header_column_area(RLV_Control *c,
                                    UWORD column,

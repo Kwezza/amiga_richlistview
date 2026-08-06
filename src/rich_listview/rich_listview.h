@@ -728,7 +728,10 @@ LONG rlv_view_row_of(const RLV_Control *c, LONG source_row);
  * Drag preview draws inside handle_input (XOR guide + clipped title) without
  * rebuilding layout. Applications should keep delivering POINTER_MOVE (and
  * SELECT_UP / CANCEL) while the button is held, including when the pointer
- * leaves the control — use rlv_column_resize_is_active() with ReportMouse().
+ * leaves the control — use rlv_column_resize_needs_report_mouse() with
+ * ReportMouse(). A horizontal resize pointer is shown over resizable header
+ * dividers and during drags; the host installs it via SetPointer() using
+ * rlv_column_resize_wants_pointer() (compiled out when resizing is off).
  *
  * On COLUMN_RESIZED, event->value is RLV_RESIZE_REPAINT_REGIONAL or _FULL.
  * Prefer rlv_render_resized_columns for regional; otherwise full rlv_render.
@@ -736,6 +739,8 @@ LONG rlv_view_row_of(const RLV_Control *c, LONG source_row);
 VOID rlv_set_column_resize_enabled(RLV_Control *c, BOOL enabled);
 BOOL rlv_get_column_resize_enabled(const RLV_Control *c);
 BOOL rlv_column_resize_is_active(const RLV_Control *c);
+BOOL rlv_column_resize_wants_pointer(const RLV_Control *c);
+BOOL rlv_column_resize_needs_report_mouse(const RLV_Control *c);
 BOOL rlv_get_column_width(const RLV_Control *c, UWORD column, WORD *out_width);
 BOOL rlv_set_column_width(RLV_Control *c, UWORD column, WORD width);
 BOOL rlv_set_column_widths(RLV_Control *c, const WORD *widths, UWORD count);

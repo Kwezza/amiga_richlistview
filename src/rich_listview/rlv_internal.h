@@ -184,6 +184,7 @@ struct RLV_Control
     BOOL column_resize_enabled;
     /* Drag session (preview only until commit). */
     BOOL resize_dragging;
+    BOOL resize_pointer_wanted; /* host should show horizontal resize pointer */
     BOOL resize_guide_visible;
     UWORD resize_left_col;
     UWORD resize_right_col;
@@ -346,6 +347,8 @@ VOID rlv_sort_draw_indicator(RLV_Control *c,
 #define RLV_COL_RESIZE_MIN_DEFAULT  16
 /* Half-width of the divider hit zone (pixels each side of divider_x). */
 #define RLV_COL_RESIZE_HIT_SLACK    3
+/* Drag preview / commit quantisation step (pixels), relative to press. */
+#define RLV_COLUMN_RESIZE_STEP      4
 
 VOID rlv_column_resize_free(RLV_Control *c);
 /* After set_columns: alloc/copy widths from borrowed columns. */
@@ -357,6 +360,8 @@ VOID rlv_column_resize_cancel(RLV_Control *c, BOOL erase_visual);
  * Does not fill an application event.
  */
 BOOL rlv_column_resize_handle_select_down(RLV_Control *c, WORD x, WORD y);
+/* POINTER_MOVE while not dragging: updates hover pointer state only. */
+VOID rlv_column_resize_handle_hover_move(RLV_Control *c, WORD x, WORD y);
 /* POINTER_MOVE while dragging: updates preview; no event. */
 VOID rlv_column_resize_handle_pointer_move(RLV_Control *c, WORD x, WORD y);
 /*
@@ -376,8 +381,8 @@ WORD rlv_column_effective_width(const RLV_Control *c, UWORD column);
 VOID rlv_render_header_column(RLV_Control *c, UWORD column);
 /*
  * Redraw the intersection of one header column with screen_area (committed
- * style). Used during resize drag to restore only an exposed strip of the
- * right-hand column without repainting the whole pair.
+ * style). Available for regional header repair; the drag preview path no
+ * longer uses it (avoids flashing the committed divider / sort glyph).
  */
 VOID rlv_render_header_column_area(RLV_Control *c,
                                    UWORD column,

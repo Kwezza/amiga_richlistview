@@ -921,3 +921,69 @@ static UWORD rlv_v36_baseline(APTR ctx)
     }
     return 6;
 }
+
+#if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
+
+/*
+ * Horizontal column-resize pointer for SetPointer() / ClearPointer() (V36+).
+ *
+ * Artwork: 13x5 double-headed arrow with a 3-pixel centre bar (padded to
+ * the required 16-pixel sprite width). Colour 1 = black body; colour 2 =
+ * cream highlight on left-facing edges. Sprite layout is the classic
+ * Intuition form (leading/trailing reserved zero pairs; two words per
+ * image row = plane0 LSB, plane1 MSB). Hotspot offsets (-6,-2) put the
+ * mouse on the middle of the centre bar (sprite pixel 6,2). Stored in
+ * Chip RAM via __chip. Compiled only when RLV_ENABLE_COLUMN_RESIZE is on.
+ *
+ *   ..CB.....CB.....
+ *   .CB...B...CB....
+ *   CBBBBBBBBBBBB...
+ *   .CB...B...CB....
+ *   ..CB.....CB.....
+ */
+static UWORD __chip g_rlv_cr_resize_pointer[] = {
+    0x0000, 0x0000, /* reserved */
+    0x1020, 0x2040, /* row 0: black @3,10; cream @2,9 */
+    0x2210, 0x4020, /* row 1: black @2,6,11; cream @1,10 */
+    0x7FF8, 0x8000, /* row 2: cream tip @0; black shaft @1..12 */
+    0x2210, 0x4020, /* row 3 */
+    0x1020, 0x2040, /* row 4 */
+    0x0000, 0x0000  /* reserved */
+};
+
+#define RLV_CR_RESIZE_POINTER_HEIGHT  5
+#define RLV_CR_RESIZE_POINTER_WIDTH   16
+#define RLV_CR_RESIZE_POINTER_XOFF   (-6)
+#define RLV_CR_RESIZE_POINTER_YOFF   (-2)
+
+static BOOL g_rlv_cr_pointer_installed = FALSE;
+
+VOID rlv_backend_v36_sync_column_resize_pointer(struct Window *win, BOOL want)
+{
+    if (win == 0) {
+        return;
+    }
+    if (want) {
+        if (!g_rlv_cr_pointer_installed) {
+            SetPointer(win,
+                       (UWORD *)g_rlv_cr_resize_pointer,
+                       (WORD)RLV_CR_RESIZE_POINTER_HEIGHT,
+                       (WORD)RLV_CR_RESIZE_POINTER_WIDTH,
+                       (WORD)RLV_CR_RESIZE_POINTER_XOFF,
+                       (WORD)RLV_CR_RESIZE_POINTER_YOFF);
+            g_rlv_cr_pointer_installed = TRUE;
+            RLV_LOG("COLUMN_RESIZE pointer install");
+        }
+    } else if (g_rlv_cr_pointer_installed) {
+        ClearPointer(win);
+        g_rlv_cr_pointer_installed = FALSE;
+        RLV_LOG("COLUMN_RESIZE pointer clear");
+    }
+}
+
+VOID rlv_backend_v36_clear_column_resize_pointer(struct Window *win)
+{
+    rlv_backend_v36_sync_column_resize_pointer(win, FALSE);
+}
+
+#endif /* RLV_ENABLE_COLUMN_RESIZE */

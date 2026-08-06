@@ -485,6 +485,18 @@ BOOL rlv_column_resize_is_active(const RLV_Control *c)
     return FALSE;
 }
 
+BOOL rlv_column_resize_wants_pointer(const RLV_Control *c)
+{
+    (void)c;
+    return FALSE;
+}
+
+BOOL rlv_column_resize_needs_report_mouse(const RLV_Control *c)
+{
+    (void)c;
+    return FALSE;
+}
+
 BOOL rlv_get_column_width(const RLV_Control *c, UWORD column, WORD *out_width)
 {
     if (c == 0 || out_width == 0 || c->columns == 0

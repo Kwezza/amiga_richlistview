@@ -48,7 +48,8 @@
  *     dividers (narrow hit zone) for two-column exchange; XOR guide +
  *     clipped highlight title preview; disclosure/On columns locked.
  *     Right button cancels. Key R resets widths. COLUMN_RESIZED updates
- *     the status line. Keep delivering MOUSEMOVE while dragging (ReportMouse).
+ *     the status line. MOUSEMOVE + ReportMouse while resize is enabled;
+ *     horizontal resize pointer over valid header dividers (SetPointer).
  *
  * Required modules: rlv_*.o (incl. wrap + checkbox + expand/disclosure),
  *                   rlv_backend_amiga_v36.o, rlv_platform.o
@@ -850,26 +851,33 @@ static BOOL demo_install_column_resize(RLV_Control *control, WORD font_w)
     return TRUE;
 }
 
-static VOID demo_sync_resize_report_mouse(struct Window *win,
-                                          RLV_Control *control)
+static VOID demo_sync_column_resize_host(struct Window *win,
+                                         RLV_Control *control)
 {
-    BOOL active;
+    BOOL need_mouse;
+    BOOL want_pointer;
 
     if (win == 0) {
         return;
     }
-    active = (control != 0 && rlv_column_resize_is_active(control))
-             ? TRUE : FALSE;
-    if (active && !g_demo_resize_report_mouse) {
+    need_mouse = (control != 0
+                  && rlv_column_resize_needs_report_mouse(control))
+                 ? TRUE : FALSE;
+    if (need_mouse && !g_demo_resize_report_mouse) {
         /* Prefer flag toggle — ReportMouse() calling convention varies. */
         win->Flags |= WFLG_REPORTMOUSE;
         g_demo_resize_report_mouse = TRUE;
         RLV_LOG("COLUMN_RESIZE ReportMouse ON");
-    } else if (!active && g_demo_resize_report_mouse) {
+    } else if (!need_mouse && g_demo_resize_report_mouse) {
         win->Flags &= (ULONG)~WFLG_REPORTMOUSE;
         g_demo_resize_report_mouse = FALSE;
         RLV_LOG("COLUMN_RESIZE ReportMouse OFF");
     }
+
+    want_pointer = (control != 0
+                    && rlv_column_resize_wants_pointer(control))
+                   ? TRUE : FALSE;
+    rlv_backend_v36_sync_column_resize_pointer(win, want_pointer);
 }
 #endif /* RLV_ENABLE_COLUMN_RESIZE */
 
@@ -1940,6 +1948,9 @@ static VOID demo_handle_newsize(struct Window *win,
     RLV_LOG("RESIZE scroller sync begin");
     demo_sync_scroller(win, *scroller_io, control, last_top);
     RLV_LOG("RESIZE scroller sync end");
+#if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
+    demo_sync_column_resize_host(win, control);
+#endif
     RLV_LOG("RESIZE demo_handle_newsize end");
 }
 
@@ -2501,7 +2512,7 @@ static BOOL demo_apply_input(RLV_Control *control,
     scroll_after = rlv_get_scroll_y(control);
 
 #if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
-    demo_sync_resize_report_mouse(win, control);
+    demo_sync_column_resize_host(win, control);
 #endif
 
     RLV_LOGF("rlv_handle_input end handled=%d ev.type=%u ev.row=%ld ev.value=%ld scroll_y=%ld",
@@ -2620,7 +2631,7 @@ static BOOL demo_apply_input(RLV_Control *control,
         DEMO_FFLUSH();
         demo_update_event_status(win, control, &ev);
 #if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
-        demo_sync_resize_report_mouse(win, control);
+        demo_sync_column_resize_host(win, control);
 #endif
         if (ev.value == RLV_RESIZE_REPAINT_REGIONAL
             && rlv_render_resized_columns(control,
@@ -3162,6 +3173,9 @@ int main(int argc, char **argv)
                   | IDCMP_RAWKEY
                   | IDCMP_MENUPICK
                   | SCROLLERIDCMP
+#if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
+                  | IDCMP_INACTIVEWINDOW
+#endif
                   | DEMO_IDCMP_EXTRA;
 
     win = OpenWindowTags(NULL,
@@ -3280,7 +3294,8 @@ int main(int argc, char **argv)
     }
     DEMO_PRINTF("Column resize: drag header dividers (not disclosure/On).\n");
     DEMO_PRINTF("Right button cancels a drag; R resets column widths.\n");
-    DEMO_PRINTF("MOUSEMOVE is reported while dragging (including outside the control).\n");
+    DEMO_PRINTF("MOUSEMOVE + resize pointer while enabled (ReportMouse).\n");
+    demo_sync_column_resize_host(win, control);
 #endif
 
     demo_bounds_from_geom(&geom, &bounds);
@@ -3509,7 +3524,7 @@ int main(int argc, char **argv)
             } else if (class == IDCMP_MOUSEMOVE) {
 #if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
                 if (active_control != 0
-                    && rlv_column_resize_is_active(active_control)) {
+                    && rlv_get_column_resize_enabled(active_control)) {
                     memset(&inev, 0, sizeof(inev));
                     inev.type = (UWORD)RLV_INPUT_POINTER_MOVE;
                     inev.x = mx;
@@ -3534,12 +3549,26 @@ int main(int argc, char **argv)
                                     control, font_w, font_h,
                                     &last_scroll_top);
                 demo_compute_geom(win, font_w, font_h, &g_demo_geom);
+            } else if (class == IDCMP_INACTIVEWINDOW) {
+#if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
+                rlv_backend_v36_clear_column_resize_pointer(win);
+#endif
             } else if (class == IDCMP_INTUITICKS) {
                 /* Logged in demo_log_idcmp; no action. */
             }
         }
     }
     RLV_LOG("event loop exited");
+
+#if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
+    if (win != 0) {
+        rlv_backend_v36_clear_column_resize_pointer(win);
+        if (g_demo_resize_report_mouse) {
+            win->Flags &= (ULONG)~WFLG_REPORTMOUSE;
+            g_demo_resize_report_mouse = FALSE;
+        }
+    }
+#endif
 
     RLV_LOG("control destroyed");
     rlv_destroy(control);
@@ -3573,6 +3602,13 @@ fail_backend:
 fail_window:
     RLV_LOG("cleanup fail_window");
     if (win != 0) {
+#if defined(RLV_ENABLE_COLUMN_RESIZE) && (RLV_ENABLE_COLUMN_RESIZE != 0)
+        rlv_backend_v36_clear_column_resize_pointer(win);
+        if (g_demo_resize_report_mouse) {
+            win->Flags &= (ULONG)~WFLG_REPORTMOUSE;
+            g_demo_resize_report_mouse = FALSE;
+        }
+#endif
         demo_cleanup_menus(win);
         CloseWindow(win);
         win = 0;

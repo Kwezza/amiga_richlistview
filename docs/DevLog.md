@@ -1,5 +1,15 @@
 # RichListview — Dev Log
 
+## 2026-08-05 — Column-resize preview refinement (4 px snap, pair preview)
+
+Audited the working drag preview. Divider flash came from shrink-path
+`rlv_render_header_column_area` redrawing the committed cell frame (and
+sort glyph) at the old divider. Replaced mid-drag painting with a dedicated
+two-title interior preview, four-pixel relative quantisation, sort
+suppression during drag, and a body-only `COMPLEMENT` guide.
+
+**Report:** `docs/RICHLISTVIEW_COLUMN_RESIZE_PREVIEW_REFINEMENT_REPORT.md`
+
 ## 2026-08-05 — Column-resize drag preview redraw (7 MHz)
 
 Drag moves no longer restore full left/right headers with black titles.
@@ -178,3 +188,10 @@ Implemented the first wishlist item: embedded checkboxes can activate without se
 - Docs, overview, wishlist status, and implementation report
 
 **Report:** `docs/RICHLISTVIEW_CONTROL_ACTIVATION_POLICY_IMPLEMENTATION_REPORT.md`
+
+## 2026-08-06 — Column-resize horizontal pointer
+
+Added V36 `SetPointer()` / `ClearPointer()` resize cursor gated by
+`RLV_ENABLE_COLUMN_RESIZE`: hover over valid header dividers, retained
+during drags, host sync via `rlv_column_resize_wants_pointer()` and
+`rlv_backend_v36_sync_column_resize_pointer()`.
