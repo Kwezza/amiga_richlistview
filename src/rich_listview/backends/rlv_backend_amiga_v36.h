@@ -8,6 +8,7 @@
  */
 
 #include "rich_listview/rlv_draw.h"
+#include "rich_listview/rlv_features.h"
 
 #include <exec/types.h>
 #include <graphics/gfx.h>
@@ -16,6 +17,7 @@
 #include <intuition/intuition.h>
 #include <intuition/intuitionbase.h>
 #include <intuition/screens.h>
+#include <graphics/view.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -40,6 +42,10 @@ VOID rlv_backend_v36_set_rastport(RLV_BackendV36 *backend,
 VOID rlv_backend_v36_set_font(RLV_BackendV36 *backend,
                               struct TextFont *font);
 
+/** Borrowed screen/window ColorMap for adaptive pen acquisition; optional. */
+VOID rlv_backend_v36_set_colormap(RLV_BackendV36 *backend,
+                                  struct ColorMap *cm);
+
 const RLV_DrawOps *rlv_backend_v36_get_ops(void);
 
 APTR rlv_backend_v36_get_context(RLV_BackendV36 *backend);
@@ -55,6 +61,13 @@ VOID rlv_backend_v36_pens_from_drawinfo(const struct DrawInfo *dri,
  */
 VOID rlv_backend_v36_sync_column_resize_pointer(struct Window *win, BOOL want);
 VOID rlv_backend_v36_clear_column_resize_pointer(struct Window *win);
+#endif
+
+#if defined(RLV_NEED_ADAPTIVE_COLORMAP) && (RLV_NEED_ADAPTIVE_COLORMAP != 0)
+/** Borrowed RastPort for adaptive pen acquisition; NULL if unavailable. */
+struct RastPort *rlv_backend_v36_rastport(RLV_BackendV36 *backend);
+/** Borrowed ColorMap (set via rlv_backend_v36_set_colormap); may be NULL. */
+struct ColorMap *rlv_backend_v36_colormap(RLV_BackendV36 *backend);
 #endif
 
 #ifdef __cplusplus

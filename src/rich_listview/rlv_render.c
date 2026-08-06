@@ -192,6 +192,19 @@ static VOID rlv_draw_body_cell_verticals(RLV_Control *c,
     ops->draw_line(ctx, x1, y1, x1, y2);
 }
 
+/*
+ * Row dividers belong in the inter-row gap when row_gap >= 1 so they do
+ * not steal the last content pixel and leave a background hairline above
+ * the next row. With row_gap == 0 the divider still overlays content.MaxY.
+ */
+static WORD rlv_row_divider_y(const RLV_Control *c, WORD content_max_y)
+{
+    if (c != 0 && c->row_gap >= 1) {
+        return (WORD)(content_max_y + 1);
+    }
+    return content_max_y;
+}
+
 static VOID rlv_draw_row_divider(RLV_Control *c,
                                       ULONG layout_index,
                                       WORD y)
@@ -216,7 +229,7 @@ static VOID rlv_draw_row_divider(RLV_Control *c,
     if (max_x < min_x) {
         return;
     }
-    ops->set_pens(ctx, c->pens.separator, c->pens.background);
+    ops->set_pens(ctx, rlv_row_divider_pen(c), c->pens.background);
 
     if (c->row_divider_style == (UWORD)RLV_ROW_DIVIDER_DOTTED) {
         if (ops->draw_dotted_hline != 0) {
@@ -283,6 +296,56 @@ static VOID rlv_draw_cell_text(RLV_Control *c,
     ops->draw_text(ctx, x, baseline_y, text, fit);
 }
 
+/* Header titles: transparent text over patterned fills. */
+static VOID rlv_draw_header_cell_text(RLV_Control *c,
+                                      CONST_STRPTR text,
+                                      const RLV_PixelColumn *col,
+                                      WORD baseline_y,
+                                      UWORD text_pen,
+                                      UWORD back_pen)
+{
+    const RLV_DrawOps *ops;
+    APTR ctx;
+    UWORD len;
+    UWORD fit;
+    UWORD max_w;
+    UWORD tw;
+    WORD x;
+
+    if (c == 0 || c->draw_ops == 0 || col == 0) {
+        return;
+    }
+    if (text == 0 || text[0] == '\0') {
+        return;
+    }
+
+    ops = c->draw_ops;
+    ctx = c->draw_context;
+    len = rlv_strlen(text);
+    max_w = 0;
+    if (col->text_right >= col->text_left) {
+        max_w = (UWORD)(col->text_right - col->text_left + 1);
+    }
+    fit = rlv_fit_chars(c, text, len, max_w);
+    if (fit == 0) {
+        return;
+    }
+
+    tw = ops->text_width(ctx, text, fit);
+    x = rlv_align_x(col->alignment,
+                         col->text_left,
+                         col->text_right,
+                         tw);
+
+    if (rlv_title_fill_is_patterned(c) && ops->draw_text_jam1 != 0) {
+        ops->set_pens(ctx, text_pen, text_pen);
+        ops->draw_text_jam1(ctx, x, baseline_y, text, fit);
+    } else {
+        ops->set_pens(ctx, text_pen, back_pen);
+        ops->draw_text(ctx, x, baseline_y, text, fit);
+    }
+}
+
 static VOID rlv_draw_header(RLV_Control *c)
 {
     const RLV_DrawOps *ops;
@@ -309,12 +372,11 @@ static VOID rlv_draw_header(RLV_Control *c)
     y2 = c->header_bounds.MaxY;
 
     /* Header face fill */
-    ops->set_pens(ctx, c->pens.background, c->pens.background);
-    ops->fill_rect(ctx,
-                   c->header_bounds.MinX,
-                   y1,
-                   c->header_bounds.MaxX,
-                   y2);
+    rlv_title_fill_area(c,
+                        c->header_bounds.MinX,
+                        y1,
+                        c->header_bounds.MaxX,
+                        y2);
 
     baseline = (WORD)(y1 + (WORD)c->cell_padding_y
                       + c->font_metrics.baseline);
@@ -339,8 +401,9 @@ static VOID rlv_draw_header(RLV_Control *c)
         }
 #endif
         title = (c->columns != 0) ? c->columns[i].title : 0;
-        rlv_draw_cell_text(c, title, &geom, baseline,
-                                c->pens.text, c->pens.background);
+        rlv_draw_header_cell_text(c, title, &geom, baseline,
+                                  c->pens.text,
+                                  rlv_title_fill_text_back_pen(c));
 #if defined(RLV_ENABLE_SORTING) && (RLV_ENABLE_SORTING != 0)
         rlv_sort_draw_indicator(c, i, x1, x2, y1, y2);
 #endif
@@ -381,7 +444,7 @@ VOID rlv_render_header_column(RLV_Control *c, UWORD column)
     }
 
     ops->set_pens(ctx, c->pens.background, c->pens.background);
-    ops->fill_rect(ctx, x1, y1, x2, y2);
+    rlv_title_fill_area(c, x1, y1, x2, y2);
     rlv_draw_cell_frame(c, x1, y1, x2, y2);
 
     geom = c->col_geom[column];
@@ -395,8 +458,9 @@ VOID rlv_render_header_column(RLV_Control *c, UWORD column)
     baseline = (WORD)(y1 + (WORD)c->cell_padding_y
                       + c->font_metrics.baseline);
     title = (c->columns != 0) ? c->columns[column].title : 0;
-    rlv_draw_cell_text(c, title, &geom, baseline,
-                            c->pens.text, c->pens.background);
+    rlv_draw_header_cell_text(c, title, &geom, baseline,
+                              c->pens.text,
+                              rlv_title_fill_text_back_pen(c));
 #if defined(RLV_ENABLE_SORTING) && (RLV_ENABLE_SORTING != 0)
     rlv_sort_draw_indicator(c, column, x1, x2, y1, y2);
 #endif
@@ -513,7 +577,7 @@ VOID rlv_render_header_column_area(RLV_Control *c,
     }
 
     ops->set_pens(ctx, c->pens.background, c->pens.background);
-    ops->fill_rect(ctx, cell.MinX, cell.MinY, cell.MaxX, cell.MaxY);
+    rlv_title_fill_area(c, cell.MinX, cell.MinY, cell.MaxX, cell.MaxY);
     rlv_draw_cell_frame(c, cell.MinX, cell.MinY, cell.MaxX, cell.MaxY);
 
     geom = c->col_geom[column];
@@ -527,8 +591,9 @@ VOID rlv_render_header_column_area(RLV_Control *c,
     baseline = (WORD)(cell.MinY + (WORD)c->cell_padding_y
                       + c->font_metrics.baseline);
     title = (c->columns != 0) ? c->columns[column].title : 0;
-    rlv_draw_cell_text(c, title, &geom, baseline,
-                            c->pens.text, c->pens.background);
+    rlv_draw_header_cell_text(c, title, &geom, baseline,
+                              c->pens.text,
+                              rlv_title_fill_text_back_pen(c));
 #if defined(RLV_ENABLE_SORTING) && (RLV_ENABLE_SORTING != 0)
     rlv_sort_draw_indicator(c, column,
                             cell.MinX, cell.MaxX,
@@ -635,7 +700,8 @@ static VOID rlv_draw_frag(RLV_Control *c,
                                const RLV_Frag *frag,
                                WORD baseline_y,
                                UWORD text_pen,
-                               UWORD back_pen)
+                               UWORD back_pen,
+                               BOOL jam1_text)
 {
     const RLV_DrawOps *ops;
     APTR ctx;
@@ -656,9 +722,15 @@ static VOID rlv_draw_frag(RLV_Control *c,
     ops = c->draw_ops;
     ctx = c->draw_context;
     RLV_BENCH_COUNT(RLV_BENCH_COUNTER_CELLS_DRAWN);
-    ops->set_pens(ctx, text_pen, back_pen);
-    ops->draw_text(ctx, frag->relative_x, baseline_y,
-                   frag->text, frag->length);
+    if (jam1_text && ops->draw_text_jam1 != 0) {
+        ops->set_pens(ctx, text_pen, text_pen);
+        ops->draw_text_jam1(ctx, frag->relative_x, baseline_y,
+                            frag->text, frag->length);
+    } else {
+        ops->set_pens(ctx, text_pen, back_pen);
+        ops->draw_text(ctx, frag->relative_x, baseline_y,
+                       frag->text, frag->length);
+    }
 }
 
 static UWORD rlv_trim_trailing_spaces(CONST_STRPTR text, UWORD length)
@@ -723,7 +795,8 @@ static VOID rlv_draw_frag_with_ellipsis(RLV_Control *c,
                                              WORD text_right,
                                              BOOL want_ellipsis,
                                              UWORD text_pen,
-                                             UWORD back_pen)
+                                             UWORD back_pen,
+                                             BOOL jam1_text)
 {
     const RLV_DrawOps *ops;
     APTR ctx;
@@ -755,7 +828,7 @@ static VOID rlv_draw_frag_with_ellipsis(RLV_Control *c,
     }
 
     if (!want_ellipsis) {
-        rlv_draw_frag(c, frag, baseline_y, text_pen, back_pen);
+        rlv_draw_frag(c, frag, baseline_y, text_pen, back_pen, jam1_text);
         return;
     }
 
@@ -835,8 +908,14 @@ static VOID rlv_draw_frag_with_ellipsis(RLV_Control *c,
 
     if (draw_text && draw_len > 0) {
         RLV_BENCH_COUNT(RLV_BENCH_COUNTER_CELLS_DRAWN);
-        ops->set_pens(ctx, text_pen, back_pen);
-        ops->draw_text(ctx, text_x, baseline_y, frag->text, draw_len);
+        if (jam1_text && ops->draw_text_jam1 != 0) {
+            ops->set_pens(ctx, text_pen, text_pen);
+            ops->draw_text_jam1(ctx, text_x, baseline_y,
+                                frag->text, draw_len);
+        } else {
+            ops->set_pens(ctx, text_pen, back_pen);
+            ops->draw_text(ctx, text_x, baseline_y, frag->text, draw_len);
+        }
     }
 
     if (draw_dots) {
@@ -882,6 +961,7 @@ static VOID rlv_paint_row_content(RLV_Control *c,
     struct Rectangle marker;
     BOOL row_collapsed;
     BOOL single_line_mode;
+    BOOL jam1_text;
 
     if (c == 0 || paint_area == 0 || c->draw_ops == 0) {
         return;
@@ -909,20 +989,24 @@ static VOID rlv_paint_row_content(RLV_Control *c,
     is_current = (c->selected_row >= 0
                   && (LONG)source == c->selected_row) ? TRUE : FALSE;
     use_selected_fill = rlv_row_uses_selected_fill(c, (LONG)source);
+    jam1_text = FALSE;
     if (use_selected_fill) {
-        fill_pen = c->pens.selected_background;
-        text_pen = c->pens.selected_text;
-        text_back = c->pens.selected_background;
+        fill_pen = rlv_selection_fill_pen(c);
+        text_pen = rlv_selection_text_pen(c);
+        text_back = fill_pen;
+        ops->set_pens(ctx, fill_pen, fill_pen);
+        ops->fill_rect(ctx, draw.MinX, draw.MinY, draw.MaxX, draw.MaxY);
         RLV_BENCH_COUNT(RLV_BENCH_COUNTER_HIGHLIGHT_FILLS);
     } else {
-        fill_pen = c->pens.background;
+        jam1_text = rlv_row_uses_pattern_backdrop(c, (LONG)source);
+        rlv_row_fill_normal_backdrop(c,
+                                     draw.MinX, draw.MinY,
+                                     draw.MaxX, draw.MaxY,
+                                     (LONG)source);
         text_pen = c->pens.text;
-        text_back = c->pens.background;
+        text_back = rlv_row_normal_backdrop_pen(c, (LONG)source);
         RLV_BENCH_COUNT(RLV_BENCH_COUNTER_BACKGROUND_FILLS);
     }
-
-    ops->set_pens(ctx, fill_pen, fill_pen);
-    ops->fill_rect(ctx, draw.MinX, draw.MinY, draw.MaxX, draw.MaxY);
 
     for (col = 0; col < c->column_count && c->col_geom != 0; col++) {
         cell_left = c->col_geom[col].left;
@@ -1011,9 +1095,10 @@ static VOID rlv_paint_row_content(RLV_Control *c,
                         c, frag, baseline,
                         c->col_geom[col].text_left,
                         c->col_geom[col].text_right,
-                        TRUE, text_pen, text_back);
+                        TRUE, text_pen, text_back, jam1_text);
                 } else {
-                    rlv_draw_frag(c, frag, baseline, text_pen, text_back);
+                    rlv_draw_frag(c, frag, baseline, text_pen, text_back,
+                                  jam1_text);
                 }
             }
         }
@@ -1042,8 +1127,8 @@ static VOID rlv_paint_row_content(RLV_Control *c,
             marker_right = marker.MaxX;
             if (marker_right >= marker.MinX) {
                 ops->set_pens(ctx,
-                              c->pens.selected_background,
-                              c->pens.selected_background);
+                              rlv_selection_fill_pen(c),
+                              rlv_selection_fill_pen(c));
                 ops->fill_rect(ctx,
                                marker.MinX, marker.MinY,
                                marker_right, marker.MaxY);
@@ -1052,7 +1137,8 @@ static VOID rlv_paint_row_content(RLV_Control *c,
         }
     }
 
-    rlv_draw_row_divider(c, layout_index, content.MaxY);
+    rlv_draw_row_divider(c, layout_index,
+                         rlv_row_divider_y(c, content.MaxY));
 }
 
 static VOID rlv_paint_row_gap(RLV_Control *c,
@@ -1065,6 +1151,7 @@ static VOID rlv_paint_row_gap(RLV_Control *c,
     struct Rectangle draw;
     WORD cell_left;
     WORD cell_right;
+    WORD fill_top;
     UWORD col;
 
     if (c == 0 || paint_area == 0 || c->draw_ops == 0 || c->row_gap < 1) {
@@ -1077,16 +1164,30 @@ static VOID rlv_paint_row_gap(RLV_Control *c,
         return;
     }
 
+    /*
+     * Divider (when enabled) owns the first gap pixel. Skip it here so the
+     * later/earlier divider stroke is not wiped by the background restore.
+     */
+    fill_top = draw.MinY;
+    if (c->row_divider_style != (UWORD)RLV_ROW_DIVIDER_NONE
+        && layout_index + 1 < c->row_count
+        && fill_top == gap.MinY) {
+        fill_top = (WORD)(fill_top + 1);
+    }
+    if (draw.MaxY < fill_top) {
+        return;
+    }
+
     ops = c->draw_ops;
     ctx = c->draw_context;
     ops->set_pens(ctx, c->pens.background, c->pens.background);
-    ops->fill_rect(ctx, draw.MinX, draw.MinY, draw.MaxX, draw.MaxY);
+    ops->fill_rect(ctx, draw.MinX, fill_top, draw.MaxX, draw.MaxY);
 
     for (col = 0; col < c->column_count && c->col_geom != 0; col++) {
         cell_left = c->col_geom[col].left;
         cell_right = rlv_cell_right(c, col);
         rlv_draw_body_cell_verticals(c,
-                                          cell_left, draw.MinY,
+                                          cell_left, fill_top,
                                           cell_right, draw.MaxY);
     }
 }
@@ -1487,8 +1588,8 @@ UWORD rlv_render_cell_control(RLV_Control *c,
     ctx = c->draw_context;
     use_selected_fill = rlv_row_uses_selected_fill(c, row);
     back_pen = use_selected_fill
-        ? c->pens.selected_background
-        : c->pens.background;
+        ? rlv_selection_fill_pen(c)
+        : rlv_row_normal_backdrop_pen(c, row);
 
     clip_pushed = FALSE;
     clip_ok = TRUE;
@@ -1505,8 +1606,16 @@ UWORD rlv_render_cell_control(RLV_Control *c,
     }
 
     /* Restore local background under the control, then shared paint. */
-    ops->set_pens(ctx, back_pen, back_pen);
-    ops->fill_rect(ctx, box.MinX, box.MinY, box.MaxX, box.MaxY);
+    if (!use_selected_fill
+        && rlv_row_uses_pattern_backdrop(c, row)) {
+        rlv_row_fill_normal_backdrop(c,
+                                     box.MinX, box.MinY,
+                                     box.MaxX, box.MaxY,
+                                     row);
+    } else {
+        ops->set_pens(ctx, back_pen, back_pen);
+        ops->fill_rect(ctx, box.MinX, box.MinY, box.MaxX, box.MaxY);
+    }
     rlv_checkbox_paint(c, row, column, use_selected_fill);
 
     if (clip_pushed && ops->pop_clip != 0) {
@@ -1942,6 +2051,17 @@ VOID rlv_render_scrolled(RLV_Control *c, LONG previous_scroll_y)
     rlv_render_viewport(c);
     RLV_LOG("control render_scrolled end");
     RLV_BENCH_END(RLV_BENCH_VIEWPORT_SCROLL, bench_scroll);
+}
+
+VOID rlv_render_header_only(RLV_Control *c)
+{
+    RLV_LOG("header render only begin");
+    if (c == 0 || c->draw_ops == 0) {
+        RLV_LOG("header render only end (null)");
+        return;
+    }
+    rlv_draw_header(c);
+    RLV_LOG("header render only end");
 }
 
 VOID rlv_render_full(RLV_Control *c)

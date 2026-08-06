@@ -109,6 +109,12 @@ struct RLV_Control
     UWORD cell_padding_y;
     UWORD row_gap;
     UWORD row_divider_style; /* RLV_RowDividerStyle */
+#if defined(RLV_ENABLE_ADAPTIVE_DIVIDERS) && (RLV_ENABLE_ADAPTIVE_DIVIDERS != 0)
+    UWORD row_divider_pen_requested; /* RLV_RowDividerPenMode */
+    UWORD row_divider_pen_effective; /* SYSTEM or ADAPTIVE after resolve */
+    UWORD row_divider_pen;           /* owned when row_divider_pen_owned */
+    BOOL row_divider_pen_owned;
+#endif
     UWORD line_height;
     UWORD header_height;
 
@@ -139,6 +145,29 @@ struct RLV_Control
     UWORD ellipsis_flags;            /* RLV_ELLIPSIS_* */
     UWORD initial_expand;            /* RLV_InitialExpandMode */
     BOOL  apply_initial_expand;      /* TRUE until first set_rows after create */
+    UWORD title_fill_style;          /* RLV_TitleFillStyle (requested) */
+#if defined(RLV_ENABLE_ADAPTIVE_TITLE_PEN) && (RLV_ENABLE_ADAPTIVE_TITLE_PEN != 0)
+    UWORD title_fill_effective;      /* paint style after adaptive resolve */
+    UWORD adaptive_title_pen;        /* owned when adaptive_title_pen_owned */
+    BOOL adaptive_title_pen_owned;
+#endif
+
+    UWORD selection_fill_requested;  /* RLV_SelectionFillMode */
+#if defined(RLV_ENABLE_ADAPTIVE_SELECTION_PEN) \
+    && (RLV_ENABLE_ADAPTIVE_SELECTION_PEN != 0)
+    UWORD selection_fill_effective;  /* SYSTEM or ADAPTIVE after resolve */
+    UWORD adaptive_selection_pen;    /* owned fill when pen_owned */
+    UWORD adaptive_selection_text_pen; /* resolved text for owned fill */
+    BOOL adaptive_selection_pen_owned;
+#endif
+
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0)
+    UWORD row_backdrop_requested;    /* RLV_RowBackdropMode */
+    UWORD row_backdrop_effective;    /* STANDARD / ALTERNATE_PEN / PATTERN */
+    UWORD alternate_row_pen;         /* active alternate pen when effective */
+    UWORD caller_alternate_pen;      /* stored borrower for ALTERNATE_PEN */
+    BOOL alternate_pen_owned;        /* TRUE when adaptive acquired the pen */
+#endif
 
 #if defined(RLV_ENABLE_EXPANDABLE_ROWS) && (RLV_ENABLE_EXPANDABLE_ROWS != 0)
     /*
@@ -224,6 +253,7 @@ LONG rlv_hit_test(const RLV_Control *c, WORD x, WORD y);
 
 /* render */
 VOID rlv_render_full(RLV_Control *c);
+VOID rlv_render_header_only(RLV_Control *c);
 VOID rlv_render_viewport(RLV_Control *c);
 
 /*
@@ -303,6 +333,19 @@ BOOL rlv_disclosure_ui_enabled(const RLV_Control *c);
 
 /* TRUE when the logical row should use full selected fill/text pens. */
 BOOL rlv_row_uses_selected_fill(const RLV_Control *c, LONG logical_row);
+
+/*
+ * Paint-time selected fill/text pens. Never mutate pens.selected_*; when
+ * adaptive selection is inactive these are the DrawInfo FILLPEN/FILLTEXTPEN.
+ */
+#if defined(RLV_ENABLE_ADAPTIVE_SELECTION_PEN) \
+    && (RLV_ENABLE_ADAPTIVE_SELECTION_PEN != 0)
+UWORD rlv_selection_fill_pen(const RLV_Control *c);
+UWORD rlv_selection_text_pen(const RLV_Control *c);
+#else
+#define rlv_selection_fill_pen(c) ((UWORD)((c)->pens.selected_background))
+#define rlv_selection_text_pen(c) ((UWORD)((c)->pens.selected_text))
+#endif
 
 /*
  * Set event->row and event->row_user_data from a logical row index.
@@ -393,6 +436,75 @@ VOID rlv_render_header_column_area(RLV_Control *c,
      ? ((c)->columns[(column)].width_pixels < 1 \
         ? (WORD)1 : (c)->columns[(column)].width_pixels) \
      : (WORD)1)
+#endif
+
+/* Title-row fill patterns (rlv_title_fill.c). */
+UWORD rlv_title_fill_normalize(UWORD style);
+BOOL rlv_title_fill_is_patterned(const RLV_Control *c);
+/* JAM2 BPen for title text (matches solid face; background for patterns). */
+UWORD rlv_title_fill_text_back_pen(const RLV_Control *c);
+VOID rlv_title_fill_area(RLV_Control *c, WORD x1, WORD y1, WORD x2, WORD y2);
+#if defined(RLV_ENABLE_ADAPTIVE_TITLE_PEN) && (RLV_ENABLE_ADAPTIVE_TITLE_PEN != 0)
+VOID rlv_title_fill_init_from_config(RLV_Control *c, UWORD style);
+VOID rlv_title_fill_refresh(RLV_Control *c);
+VOID rlv_title_fill_teardown(RLV_Control *c);
+UWORD rlv_title_fill_effective_style(const RLV_Control *c);
+#endif
+
+/* Selection-fill mode (rlv_selection_fill.c). */
+UWORD rlv_selection_fill_normalize(UWORD mode);
+#if defined(RLV_ENABLE_ADAPTIVE_SELECTION_PEN) \
+    && (RLV_ENABLE_ADAPTIVE_SELECTION_PEN != 0)
+VOID rlv_selection_fill_init_from_config(RLV_Control *c, UWORD mode);
+VOID rlv_selection_fill_refresh(RLV_Control *c);
+VOID rlv_selection_fill_teardown(RLV_Control *c);
+UWORD rlv_selection_fill_effective_mode(const RLV_Control *c);
+#endif
+
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0)
+VOID rlv_alternate_rows_init_from_config(RLV_Control *c,
+                                        UWORD requested_mode,
+                                        UWORD caller_alternate_pen);
+VOID rlv_alternate_rows_teardown(RLV_Control *c);
+VOID rlv_alternate_rows_refresh(RLV_Control *c);
+VOID rlv_alternate_rows_set_mode(RLV_Control *c,
+                                 UWORD mode,
+                                 UWORD caller_alternate_pen);
+UWORD rlv_alternate_rows_normalize_mode(UWORD mode);
+/*
+ * Normal (non-selected) row backdrop pen for a source logical row index.
+ * Selected rows must not call this — use selected_background instead.
+ * Pattern effective mode returns background (fill is patterned separately).
+ */
+UWORD rlv_row_normal_backdrop_pen(const RLV_Control *c, LONG logical_row);
+BOOL rlv_row_uses_pattern_backdrop(const RLV_Control *c, LONG logical_row);
+VOID rlv_row_fill_normal_backdrop(RLV_Control *c,
+                                  WORD x1, WORD y1, WORD x2, WORD y2,
+                                  LONG logical_row);
+#else
+#define rlv_row_normal_backdrop_pen(c, row) ((UWORD)((c)->pens.background))
+#define rlv_row_uses_pattern_backdrop(c, row) (FALSE)
+#define rlv_row_fill_normal_backdrop(c, x1, y1, x2, y2, row) \
+    do { \
+        const RLV_DrawOps *_ops = (c)->draw_ops; \
+        APTR _ctx = (c)->draw_context; \
+        UWORD _pen = (c)->pens.background; \
+        if (_ops != 0 && _ops->fill_rect != 0) { \
+            _ops->set_pens(_ctx, _pen, _pen); \
+            _ops->fill_rect(_ctx, (x1), (y1), (x2), (y2)); \
+        } \
+    } while (0)
+#endif
+
+#if defined(RLV_ENABLE_ADAPTIVE_DIVIDERS) && (RLV_ENABLE_ADAPTIVE_DIVIDERS != 0)
+UWORD rlv_row_divider_pen_normalize(UWORD mode);
+VOID rlv_adaptive_divider_init_from_config(RLV_Control *c, UWORD mode);
+VOID rlv_adaptive_divider_refresh(RLV_Control *c);
+VOID rlv_adaptive_divider_teardown(RLV_Control *c);
+UWORD rlv_row_divider_pen_effective_mode(const RLV_Control *c);
+UWORD rlv_row_divider_pen(const RLV_Control *c);
+#else
+#define rlv_row_divider_pen(c) ((UWORD)((c)->pens.separator))
 #endif
 
 #ifdef __cplusplus

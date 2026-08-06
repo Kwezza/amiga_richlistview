@@ -27,8 +27,9 @@
  *     activation, CELL_CONTROL). Policy changes also update this status.
  *   - Settings menu selects pending divider / X pad / Y pad / row gap /
  *     row-display / long-word / ellipsis policies; Apply commits them
- *     transactionally (recreate + one full paint). Apply stays disabled
- *     while pending matches applied.
+ *     transactionally (recreate + one full paint). Title fill and selection
+ *     colour update the live control immediately. Apply stays disabled while
+ *     pending matches applied.
  *
  *   - Optional expandable rows (RLV_ENABLE_EXPANDABLE_ROWS): narrow
  *     disclosure column (+/-), RLV_ROW_EXPANDABLE / EXPANDED flags,
@@ -117,6 +118,17 @@ long __stack = 80000L;
 #define DEMO_MENU_CMD_LONGWORD 7
 #define DEMO_MENU_CMD_ELLIPSIS 8
 #define DEMO_MENU_CMD_INITEXP  9
+#define DEMO_MENU_CMD_TITLEFILL 10
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0)
+#define DEMO_MENU_CMD_ROWBACKDROP 11
+#endif
+#define DEMO_MENU_CMD_SELFILL 12
+#define DEMO_MENU_CMD_VISUAL  13
+#define DEMO_MENU_CMD_DIVPEN  14
+
+#define DEMO_VISUAL_STANDARD       0
+#define DEMO_VISUAL_FULL_ADAPTIVE  1
+#define DEMO_VISUAL_CUSTOM         2
 #define DEMO_MENU_ID(cmd, val) ((ULONG)(((ULONG)(cmd) << 8) | (ULONG)(val)))
 #define DEMO_MENU_CMD(id)      ((UWORD)(((ULONG)(id) >> 8) & 0xFFUL))
 #define DEMO_MENU_VAL(id)      ((UWORD)((ULONG)(id) & 0xFFUL))
@@ -176,10 +188,20 @@ typedef struct DemoSettings
     UWORD long_word_mode;
     UWORD ellipsis_flags;
     UWORD initial_expand;
+    UWORD title_fill_style;
+    UWORD selection_fill_mode;
+    UWORD row_divider_pen_mode;
+    UWORD visual_preset; /* DEMO_VISUAL_* menu state only */
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0)
+    UWORD row_backdrop_mode;
+#endif
 } DemoSettings;
 
 static DemoSettings g_demo_applied;
 static DemoSettings g_demo_pending;
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0)
+static RLV_Pens g_demo_screen_pens;
+#endif
 static struct Menu *g_demo_menu_strip = 0;
 static struct Gadget *g_demo_apply_gad = 0;
 
@@ -274,6 +296,69 @@ static struct NewMenu g_demo_newmenu[] =
       (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_ELLIPSIS, DEMO_ELLIP_VAL_COLLAPSED) },
     { NM_SUB,   "Horizontally clipped", NULL, CHECKIT | MENUTOGGLE, 0,
       (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_ELLIPSIS, DEMO_ELLIP_VAL_HORIZONTAL) },
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0)
+    { NM_ITEM,  "Row backdrop", NULL, 0, 0, NULL },
+    { NM_SUB,   "Standard", NULL, CHECKIT, ~1,
+      (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_ROWBACKDROP,
+                         RLV_ROW_BACKDROP_STANDARD) },
+    { NM_SUB,   "Caller pen stripes", NULL, CHECKIT, ~2,
+      (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_ROWBACKDROP,
+                         RLV_ROW_BACKDROP_ALTERNATE_PEN) },
+#if defined(RLV_ENABLE_ADAPTIVE_ROW_PEN) && (RLV_ENABLE_ADAPTIVE_ROW_PEN != 0)
+    { NM_SUB,   "Adaptive darker", NULL, CHECKIT, ~4,
+      (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_ROWBACKDROP,
+                         RLV_ROW_BACKDROP_ADAPTIVE) },
+#endif
+#endif
+    { NM_ITEM,  "Title fill", NULL, 0, 0, NULL },
+    { NM_SUB,   "Solid", NULL, CHECKIT, ~1,
+      (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_TITLEFILL, RLV_TITLE_FILL_SOLID) },
+    { NM_SUB,   "Grey / blue stripes", NULL, CHECKIT, ~2,
+      (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_TITLEFILL,
+                         RLV_TITLE_FILL_GREY_BLUE_STRIPES) },
+    { NM_SUB,   "Grey / white stripes", NULL, CHECKIT, ~4,
+      (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_TITLEFILL,
+                         RLV_TITLE_FILL_GREY_WHITE_STRIPES) },
+    { NM_SUB,   "Blue/Grey Checkerboard", NULL, CHECKIT, ~8,
+      (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_TITLEFILL,
+                         RLV_TITLE_FILL_BLUE_GREY_CHECKERBOARD) },
+    { NM_SUB,   "Sparse Blue Stipple", NULL, CHECKIT, ~16,
+      (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_TITLEFILL,
+                         RLV_TITLE_FILL_SPARSE_BLUE_STIPPLE) },
+    { NM_SUB,   "Wide Grey/Blue Stripes", NULL, CHECKIT, ~32,
+      (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_TITLEFILL,
+                         RLV_TITLE_FILL_WIDE_GREY_BLUE_STRIPES) },
+#if defined(RLV_ENABLE_ADAPTIVE_TITLE_PEN) && (RLV_ENABLE_ADAPTIVE_TITLE_PEN != 0)
+    { NM_SUB,   "Adaptive blend", NULL, CHECKIT, ~64,
+      (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_TITLEFILL,
+                         RLV_TITLE_FILL_ADAPTIVE_BLEND) },
+#endif
+    { NM_ITEM,  "Selection colour", NULL, 0, 0, NULL },
+    { NM_SUB,   "System", NULL, CHECKIT, ~1,
+      (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_SELFILL,
+                         RLV_SELECTION_FILL_SYSTEM) },
+#if defined(RLV_ENABLE_ADAPTIVE_SELECTION_PEN) \
+    && (RLV_ENABLE_ADAPTIVE_SELECTION_PEN != 0)
+    { NM_SUB,   "Adaptive blend", NULL, CHECKIT, ~2,
+      (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_SELFILL,
+                         RLV_SELECTION_FILL_ADAPTIVE) },
+#endif
+    { NM_ITEM,  "Row divider colour", NULL, 0, 0, NULL },
+    { NM_SUB,   "System", NULL, CHECKIT, ~1,
+      (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_DIVPEN,
+                         RLV_ROW_DIVIDER_PEN_SYSTEM) },
+#if defined(RLV_ENABLE_ADAPTIVE_DIVIDERS) && (RLV_ENABLE_ADAPTIVE_DIVIDERS != 0)
+    { NM_SUB,   "Adaptive", NULL, CHECKIT, ~2,
+      (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_DIVPEN,
+                         RLV_ROW_DIVIDER_PEN_ADAPTIVE) },
+#endif
+    { NM_ITEM,  "Visual colours", NULL, 0, 0, NULL },
+    { NM_SUB,   "Standard", NULL, CHECKIT, ~1,
+      (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_VISUAL, DEMO_VISUAL_STANDARD) },
+    { NM_SUB,   "Full Adaptive", NULL, CHECKIT, ~2,
+      (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_VISUAL, DEMO_VISUAL_FULL_ADAPTIVE) },
+    { NM_SUB,   "Custom", NULL, CHECKIT, ~4,
+      (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_VISUAL, DEMO_VISUAL_CUSTOM) },
     { NM_ITEM,  NM_BARLABEL, NULL, 0, 0, NULL },
     { NM_ITEM,  "Reset to defaults", NULL, 0, 0,
       (APTR)DEMO_MENU_ID(DEMO_MENU_CMD_RESET, 0) },
@@ -322,8 +407,27 @@ static BOOL demo_apply_pending_settings(RLV_Control **control_io,
                                         LONG *last_top);
 static BOOL demo_setup_menus(APTR vi);
 static VOID demo_cleanup_menus(struct Window *win);
+static BOOL demo_title_fill_style_valid(UWORD style);
+static BOOL demo_apply_title_fill_choice(RLV_Control *control,
+                                         struct Window *win,
+                                         UWORD style);
+static BOOL demo_selection_fill_mode_valid(UWORD mode);
+static BOOL demo_apply_selection_fill_choice(RLV_Control *control,
+                                             struct Window *win,
+                                             UWORD mode);
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0)
+static BOOL demo_row_backdrop_mode_valid(UWORD mode);
+static BOOL demo_apply_row_backdrop_choice(RLV_Control *control,
+                                           struct Window *win,
+                                           const RLV_Pens *pens,
+                                           UWORD mode);
+static VOID demo_apply_row_backdrop(RLV_Control *control,
+                                    const DemoSettings *settings,
+                                    const RLV_Pens *pens);
+#endif
 static BOOL demo_handle_menu_selection(ULONG menu_number,
-                                       struct Window *win);
+                                       struct Window *win,
+                                       RLV_Control *control);
 #ifdef RLV_ENABLE_BENCHMARKS
 static VOID demo_bench_configure(RLV_Control *control,
                                  struct Window *win,
@@ -995,6 +1099,13 @@ static VOID demo_init_default_settings(DemoSettings *out)
     out->long_word_mode = (UWORD)RLV_LONG_WORD_CLIP;
     out->ellipsis_flags = (UWORD)RLV_ELLIPSIS_COLLAPSED_CONTENT;
     out->initial_expand = (UWORD)RLV_INITIAL_EXPAND_ALL_OPEN;
+    out->title_fill_style = (UWORD)RLV_TITLE_FILL_SOLID;
+    out->selection_fill_mode = (UWORD)RLV_SELECTION_FILL_SYSTEM;
+    out->row_divider_pen_mode = (UWORD)RLV_ROW_DIVIDER_PEN_SYSTEM;
+    out->visual_preset = (UWORD)DEMO_VISUAL_STANDARD;
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0)
+    out->row_backdrop_mode = (UWORD)RLV_ROW_BACKDROP_STANDARD;
+#endif
 }
 
 static BOOL demo_settings_equal(const DemoSettings *a,
@@ -1027,6 +1138,23 @@ static BOOL demo_settings_equal(const DemoSettings *a,
     if (a->initial_expand != b->initial_expand) {
         return FALSE;
     }
+    if (a->title_fill_style != b->title_fill_style) {
+        return FALSE;
+    }
+    if (a->selection_fill_mode != b->selection_fill_mode) {
+        return FALSE;
+    }
+    if (a->row_divider_pen_mode != b->row_divider_pen_mode) {
+        return FALSE;
+    }
+    if (a->visual_preset != b->visual_preset) {
+        return FALSE;
+    }
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0)
+    if (a->row_backdrop_mode != b->row_backdrop_mode) {
+        return FALSE;
+    }
+#endif
     return TRUE;
 }
 
@@ -1044,6 +1172,13 @@ static VOID demo_copy_settings(DemoSettings *dst,
     dst->long_word_mode = src->long_word_mode;
     dst->ellipsis_flags = src->ellipsis_flags;
     dst->initial_expand = src->initial_expand;
+    dst->title_fill_style = src->title_fill_style;
+    dst->selection_fill_mode = src->selection_fill_mode;
+    dst->row_divider_pen_mode = src->row_divider_pen_mode;
+    dst->visual_preset = src->visual_preset;
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0)
+    dst->row_backdrop_mode = src->row_backdrop_mode;
+#endif
 }
 
 static BOOL demo_menu_item_matches_pending(ULONG item_id,
@@ -1089,6 +1224,23 @@ static BOOL demo_menu_item_matches_pending(ULONG item_id,
         }
         return FALSE;
     }
+    if (cmd == (UWORD)DEMO_MENU_CMD_TITLEFILL) {
+        return (BOOL)(val == pending->title_fill_style);
+    }
+    if (cmd == (UWORD)DEMO_MENU_CMD_SELFILL) {
+        return (BOOL)(val == pending->selection_fill_mode);
+    }
+    if (cmd == (UWORD)DEMO_MENU_CMD_DIVPEN) {
+        return (BOOL)(val == pending->row_divider_pen_mode);
+    }
+    if (cmd == (UWORD)DEMO_MENU_CMD_VISUAL) {
+        return (BOOL)(val == pending->visual_preset);
+    }
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0)
+    if (cmd == (UWORD)DEMO_MENU_CMD_ROWBACKDROP) {
+        return (BOOL)(val == pending->row_backdrop_mode);
+    }
+#endif
     return FALSE;
 }
 
@@ -1138,6 +1290,421 @@ static VOID demo_resync_menu_strip(struct Window *win)
     if (win != 0 && g_demo_menu_strip != 0) {
         SetMenuStrip(win, g_demo_menu_strip);
     }
+}
+
+static BOOL demo_title_fill_style_valid(UWORD style)
+{
+    return (BOOL)(style == (UWORD)RLV_TITLE_FILL_SOLID
+                  || style == (UWORD)RLV_TITLE_FILL_GREY_BLUE_STRIPES
+                  || style == (UWORD)RLV_TITLE_FILL_GREY_WHITE_STRIPES
+                  || style == (UWORD)RLV_TITLE_FILL_BLUE_GREY_CHECKERBOARD
+                  || style == (UWORD)RLV_TITLE_FILL_SPARSE_BLUE_STIPPLE
+                  || style == (UWORD)RLV_TITLE_FILL_WIDE_GREY_BLUE_STRIPES
+#if defined(RLV_ENABLE_ADAPTIVE_TITLE_PEN) && (RLV_ENABLE_ADAPTIVE_TITLE_PEN != 0)
+                  || style == (UWORD)RLV_TITLE_FILL_ADAPTIVE_BLEND
+#endif
+                  );
+}
+
+static BOOL demo_apply_title_fill_choice(RLV_Control *control,
+                                         struct Window *win,
+                                         UWORD style)
+{
+    BOOL changed;
+#if defined(RLV_ENABLE_ADAPTIVE_TITLE_PEN) && (RLV_ENABLE_ADAPTIVE_TITLE_PEN != 0)
+    UWORD effective;
+#endif
+
+    if (!demo_title_fill_style_valid(style)) {
+        return FALSE;
+    }
+
+    changed = (BOOL)(g_demo_pending.title_fill_style != style
+                     || g_demo_applied.title_fill_style != style);
+
+    g_demo_pending.title_fill_style = style;
+    g_demo_applied.title_fill_style = style;
+    g_demo_pending.visual_preset = (UWORD)DEMO_VISUAL_CUSTOM;
+    g_demo_applied.visual_preset = (UWORD)DEMO_VISUAL_CUSTOM;
+
+    if (control != 0) {
+        rlv_set_title_fill_style(control, style);
+        rlv_render(control, RLV_RENDER_HEADER_ONLY);
+#if defined(RLV_ENABLE_ADAPTIVE_TITLE_PEN) && (RLV_ENABLE_ADAPTIVE_TITLE_PEN != 0)
+        if (style == (UWORD)RLV_TITLE_FILL_ADAPTIVE_BLEND) {
+            effective = rlv_get_title_fill_effective_style(control);
+            if (effective != (UWORD)RLV_TITLE_FILL_ADAPTIVE_BLEND) {
+                demo_update_status_text(win,
+                                        "Title fill: adaptive fell back");
+            } else {
+                demo_update_status_text(win, "Title fill: adaptive blend");
+            }
+            demo_resync_menu_strip(win);
+            demo_update_apply_enabled_state(win);
+            return changed;
+        }
+#endif
+    }
+
+    demo_resync_menu_strip(win);
+    demo_update_apply_enabled_state(win);
+    return changed;
+}
+
+static BOOL demo_selection_fill_mode_valid(UWORD mode)
+{
+    if (mode == (UWORD)RLV_SELECTION_FILL_SYSTEM) {
+        return TRUE;
+    }
+#if defined(RLV_ENABLE_ADAPTIVE_SELECTION_PEN) \
+    && (RLV_ENABLE_ADAPTIVE_SELECTION_PEN != 0)
+    if (mode == (UWORD)RLV_SELECTION_FILL_ADAPTIVE) {
+        return TRUE;
+    }
+#endif
+    return FALSE;
+}
+
+static BOOL demo_apply_selection_fill_choice(RLV_Control *control,
+                                             struct Window *win,
+                                             UWORD mode)
+{
+    BOOL changed;
+#if defined(RLV_ENABLE_ADAPTIVE_SELECTION_PEN) \
+    && (RLV_ENABLE_ADAPTIVE_SELECTION_PEN != 0)
+    UWORD effective;
+#endif
+
+    if (!demo_selection_fill_mode_valid(mode)) {
+        return FALSE;
+    }
+
+    changed = (BOOL)(g_demo_pending.selection_fill_mode != mode
+                     || g_demo_applied.selection_fill_mode != mode);
+
+    g_demo_pending.selection_fill_mode = mode;
+    g_demo_applied.selection_fill_mode = mode;
+    g_demo_pending.visual_preset = (UWORD)DEMO_VISUAL_CUSTOM;
+    g_demo_applied.visual_preset = (UWORD)DEMO_VISUAL_CUSTOM;
+
+    if (control != 0) {
+        rlv_set_selection_fill_mode(control, mode);
+        rlv_render(control, RLV_RENDER_VIEWPORT_ONLY);
+#if defined(RLV_ENABLE_ADAPTIVE_SELECTION_PEN) \
+    && (RLV_ENABLE_ADAPTIVE_SELECTION_PEN != 0)
+        if (mode == (UWORD)RLV_SELECTION_FILL_ADAPTIVE) {
+            effective = rlv_get_selection_fill_effective_mode(control);
+            if (effective != (UWORD)RLV_SELECTION_FILL_ADAPTIVE) {
+                demo_update_status_text(win,
+                                        "Selection: adaptive fell back");
+            } else {
+                demo_update_status_text(win, "Selection: adaptive blend");
+            }
+            demo_resync_menu_strip(win);
+            demo_update_apply_enabled_state(win);
+            return changed;
+        }
+#endif
+    }
+
+    demo_resync_menu_strip(win);
+    demo_update_apply_enabled_state(win);
+    return changed;
+}
+
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0)
+
+static BOOL demo_row_backdrop_mode_valid(UWORD mode)
+{
+    if (mode == (UWORD)RLV_ROW_BACKDROP_STANDARD
+        || mode == (UWORD)RLV_ROW_BACKDROP_ALTERNATE_PEN) {
+        return TRUE;
+    }
+#if defined(RLV_ENABLE_ADAPTIVE_ROW_PEN) && (RLV_ENABLE_ADAPTIVE_ROW_PEN != 0)
+    if (mode == (UWORD)RLV_ROW_BACKDROP_ADAPTIVE) {
+        return TRUE;
+    }
+#endif
+    return FALSE;
+}
+
+/*
+ * Choose a borrowed DrawInfo pen for ALTERNATE_PEN mode.
+ * SHADOWPEN is often identical to TEXTPEN (pure black) on RTG screens,
+ * which produces unusable solid-black stripes — skip it in that case and
+ * prefer FILLPEN, then SHINEPEN.
+ */
+static UWORD demo_pick_caller_alternate_pen(const RLV_Pens *pens)
+{
+    UWORD chosen;
+
+    if (pens == 0) {
+        RLV_LOG("ROW_BACKDROP demo picker fail (null pens)");
+        return 0;
+    }
+
+    RLV_LOGF("ROW_BACKDROP demo picker begin bg=%u text=%u shadow=%u "
+             "fill=%u shine=%u",
+             (unsigned)pens->background,
+             (unsigned)pens->text,
+             (unsigned)pens->shadow,
+             (unsigned)pens->selected_background,
+             (unsigned)pens->shine);
+
+    if (pens->shadow == pens->background) {
+        RLV_LOGF("ROW_BACKDROP demo picker skip shadow=%u reason=same_as_bg",
+                 (unsigned)pens->shadow);
+    } else if (pens->shadow == pens->text) {
+        RLV_LOGF("ROW_BACKDROP demo picker skip shadow=%u reason=same_as_text",
+                 (unsigned)pens->shadow);
+    } else {
+        chosen = pens->shadow;
+        RLV_LOGF("ROW_BACKDROP demo picker choose shadow pen=%u",
+                 (unsigned)chosen);
+        return chosen;
+    }
+
+    if (pens->selected_background == pens->background) {
+        RLV_LOGF("ROW_BACKDROP demo picker skip fill=%u reason=same_as_bg",
+                 (unsigned)pens->selected_background);
+    } else if (pens->selected_background == pens->text) {
+        RLV_LOGF("ROW_BACKDROP demo picker skip fill=%u reason=same_as_text",
+                 (unsigned)pens->selected_background);
+    } else {
+        chosen = pens->selected_background;
+        RLV_LOGF("ROW_BACKDROP demo picker choose fill pen=%u",
+                 (unsigned)chosen);
+        return chosen;
+    }
+
+    if (pens->shine != pens->background) {
+        chosen = pens->shine;
+        RLV_LOGF("ROW_BACKDROP demo picker choose shine pen=%u",
+                 (unsigned)chosen);
+        return chosen;
+    }
+
+    RLV_LOGF("ROW_BACKDROP demo picker skip shine=%u reason=same_as_bg",
+             (unsigned)pens->shine);
+    chosen = pens->shadow;
+    RLV_LOGF("ROW_BACKDROP demo picker fallback shadow pen=%u",
+             (unsigned)chosen);
+    return chosen;
+}
+
+static VOID demo_apply_row_backdrop(RLV_Control *control,
+                                    const DemoSettings *settings,
+                                    const RLV_Pens *pens)
+{
+    UWORD alt_pen;
+
+    if (control == 0 || settings == 0) {
+        return;
+    }
+    alt_pen = demo_pick_caller_alternate_pen(pens);
+    rlv_set_row_backdrop(control, settings->row_backdrop_mode, alt_pen);
+}
+
+static BOOL demo_apply_row_backdrop_choice(RLV_Control *control,
+                                           struct Window *win,
+                                           const RLV_Pens *pens,
+                                           UWORD mode)
+{
+    BOOL changed;
+    CONST_STRPTR status;
+
+    if (!demo_row_backdrop_mode_valid(mode)) {
+        return FALSE;
+    }
+
+    changed = (BOOL)(g_demo_pending.row_backdrop_mode != mode
+                     || g_demo_applied.row_backdrop_mode != mode);
+
+    g_demo_pending.row_backdrop_mode = mode;
+    g_demo_applied.row_backdrop_mode = mode;
+    g_demo_pending.visual_preset = (UWORD)DEMO_VISUAL_CUSTOM;
+    g_demo_applied.visual_preset = (UWORD)DEMO_VISUAL_CUSTOM;
+
+    if (control != 0) {
+        demo_apply_row_backdrop(control, &g_demo_applied, pens);
+        rlv_render(control, RLV_RENDER_VIEWPORT_ONLY);
+        status = "Row backdrop updated";
+        if (mode == (UWORD)RLV_ROW_BACKDROP_ADAPTIVE
+            && rlv_get_row_backdrop_mode(control)
+               == (UWORD)RLV_ROW_BACKDROP_ADAPTIVE
+            && rlv_get_row_backdrop_effective_mode(control)
+               == (UWORD)RLV_ROW_BACKDROP_ALTERNATE_PATTERN) {
+            status = "Row backdrop: adaptive → pattern fallback";
+        } else if (mode == (UWORD)RLV_ROW_BACKDROP_ALTERNATE_PEN
+                   && pens != 0
+                   && demo_pick_caller_alternate_pen(pens) != pens->shadow) {
+            status = "Row backdrop: caller pen (fill; shadow too dark)";
+        }
+        if (win != 0) {
+            demo_update_status_text(win, status);
+        }
+    }
+
+    demo_resync_menu_strip(win);
+    demo_update_apply_enabled_state(win);
+    return changed;
+}
+
+#endif /* RLV_ENABLE_ALTERNATE_ROWS */
+
+static BOOL demo_apply_divider_pen_choice(RLV_Control *control,
+                                          struct Window *win,
+                                          UWORD mode)
+{
+    BOOL changed;
+#if defined(RLV_ENABLE_ADAPTIVE_DIVIDERS) && (RLV_ENABLE_ADAPTIVE_DIVIDERS != 0)
+    UWORD effective;
+#endif
+
+    if (mode != (UWORD)RLV_ROW_DIVIDER_PEN_SYSTEM
+#if defined(RLV_ENABLE_ADAPTIVE_DIVIDERS) && (RLV_ENABLE_ADAPTIVE_DIVIDERS != 0)
+        && mode != (UWORD)RLV_ROW_DIVIDER_PEN_ADAPTIVE
+#endif
+        ) {
+        return FALSE;
+    }
+
+    changed = (BOOL)(g_demo_pending.row_divider_pen_mode != mode
+                     || g_demo_applied.row_divider_pen_mode != mode);
+    g_demo_pending.row_divider_pen_mode = mode;
+    g_demo_applied.row_divider_pen_mode = mode;
+    g_demo_pending.visual_preset = (UWORD)DEMO_VISUAL_CUSTOM;
+    g_demo_applied.visual_preset = (UWORD)DEMO_VISUAL_CUSTOM;
+
+    if (control != 0) {
+        rlv_set_row_divider_pen_mode(control, mode);
+        rlv_render(control, RLV_RENDER_VIEWPORT_ONLY);
+#if defined(RLV_ENABLE_ADAPTIVE_DIVIDERS) && (RLV_ENABLE_ADAPTIVE_DIVIDERS != 0)
+        if (mode == (UWORD)RLV_ROW_DIVIDER_PEN_ADAPTIVE) {
+            effective = rlv_get_row_divider_pen_effective_mode(control);
+            if (effective != (UWORD)RLV_ROW_DIVIDER_PEN_ADAPTIVE) {
+                demo_update_status_text(win,
+                                        "Divider: adaptive fell back");
+            } else {
+                demo_update_status_text(win, "Divider: adaptive");
+            }
+            demo_resync_menu_strip(win);
+            demo_update_apply_enabled_state(win);
+            return changed;
+        }
+#endif
+        demo_update_status_text(win, "Divider colour updated");
+    }
+
+    demo_resync_menu_strip(win);
+    demo_update_apply_enabled_state(win);
+    return changed;
+}
+
+static BOOL demo_apply_visual_preset_choice(RLV_Control *control,
+                                            struct Window *win,
+                                            const RLV_Pens *pens,
+                                            UWORD preset)
+{
+    RLV_Config cfg;
+#if defined(RLV_ENABLE_ADAPTIVE_DIVIDERS) && (RLV_ENABLE_ADAPTIVE_DIVIDERS != 0)
+    UWORD div_effective;
+#endif
+
+    if (preset != (UWORD)DEMO_VISUAL_STANDARD
+        && preset != (UWORD)DEMO_VISUAL_FULL_ADAPTIVE
+        && preset != (UWORD)DEMO_VISUAL_CUSTOM) {
+        return FALSE;
+    }
+
+    if (preset == (UWORD)DEMO_VISUAL_CUSTOM) {
+        g_demo_pending.visual_preset = (UWORD)DEMO_VISUAL_CUSTOM;
+        g_demo_applied.visual_preset = (UWORD)DEMO_VISUAL_CUSTOM;
+        demo_resync_menu_strip(win);
+        demo_update_apply_enabled_state(win);
+        return TRUE;
+    }
+
+    if (preset == (UWORD)DEMO_VISUAL_STANDARD) {
+        g_demo_pending.title_fill_style = (UWORD)RLV_TITLE_FILL_SOLID;
+        g_demo_pending.selection_fill_mode =
+            (UWORD)RLV_SELECTION_FILL_SYSTEM;
+        g_demo_pending.row_divider_pen_mode =
+            (UWORD)RLV_ROW_DIVIDER_PEN_SYSTEM;
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0)
+        g_demo_pending.row_backdrop_mode =
+            (UWORD)RLV_ROW_BACKDROP_STANDARD;
+#endif
+    } else {
+        memset(&cfg, 0, sizeof(cfg));
+        cfg.title_fill_style = g_demo_pending.title_fill_style;
+        cfg.selection_fill_mode = g_demo_pending.selection_fill_mode;
+        cfg.row_divider_pen_mode = g_demo_pending.row_divider_pen_mode;
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0)
+        cfg.row_backdrop_mode = g_demo_pending.row_backdrop_mode;
+#endif
+        rlv_config_apply_full_adaptive_colours(&cfg);
+        g_demo_pending.title_fill_style = cfg.title_fill_style;
+        g_demo_pending.selection_fill_mode = cfg.selection_fill_mode;
+        g_demo_pending.row_divider_pen_mode = cfg.row_divider_pen_mode;
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0)
+        g_demo_pending.row_backdrop_mode = cfg.row_backdrop_mode;
+#endif
+    }
+
+    g_demo_pending.visual_preset = preset;
+    g_demo_applied.visual_preset = preset;
+    g_demo_applied.title_fill_style = g_demo_pending.title_fill_style;
+    g_demo_applied.selection_fill_mode = g_demo_pending.selection_fill_mode;
+    g_demo_applied.row_divider_pen_mode = g_demo_pending.row_divider_pen_mode;
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0)
+    g_demo_applied.row_backdrop_mode = g_demo_pending.row_backdrop_mode;
+#endif
+
+    /*
+     * Live resolve order: title → alternate rows → selection → divider.
+     * Apply requested modes once, then one combined redraw (not four).
+     */
+    if (control != 0) {
+        rlv_set_title_fill_style(control, g_demo_pending.title_fill_style);
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0)
+        demo_apply_row_backdrop(control, &g_demo_pending, pens);
+#else
+        if (pens != 0) {
+            /* pens unused when alternate rows are compiled out */
+        }
+#endif
+        rlv_set_selection_fill_mode(control,
+                                    g_demo_pending.selection_fill_mode);
+        rlv_set_row_divider_pen_mode(control,
+                                     g_demo_pending.row_divider_pen_mode);
+        rlv_render(control, 0);
+    }
+
+    demo_resync_menu_strip(win);
+    demo_update_apply_enabled_state(win);
+    if (preset == (UWORD)DEMO_VISUAL_FULL_ADAPTIVE) {
+#if defined(RLV_ENABLE_ADAPTIVE_DIVIDERS) && (RLV_ENABLE_ADAPTIVE_DIVIDERS != 0)
+        if (control != 0
+            && g_demo_pending.row_divider_pen_mode
+               == (UWORD)RLV_ROW_DIVIDER_PEN_ADAPTIVE) {
+            div_effective = rlv_get_row_divider_pen_effective_mode(control);
+            if (div_effective != (UWORD)RLV_ROW_DIVIDER_PEN_ADAPTIVE) {
+                demo_update_status_text(
+                    win, "Visual: full adaptive (divider fell back)");
+            } else {
+                demo_update_status_text(win, "Visual: full adaptive");
+            }
+        } else {
+            demo_update_status_text(win, "Visual: full adaptive");
+        }
+#else
+        demo_update_status_text(win, "Visual: full adaptive");
+#endif
+    } else {
+        demo_update_status_text(win, "Visual: standard");
+    }
+    return TRUE;
 }
 
 static VOID demo_update_apply_enabled_state(struct Window *win)
@@ -1194,7 +1761,8 @@ static VOID demo_cleanup_menus(struct Window *win)
 }
 
 static BOOL demo_handle_menu_selection(ULONG menu_number,
-                                       struct Window *win)
+                                       struct Window *win,
+                                       RLV_Control *control)
 {
     struct MenuItem *menu_item;
     ULONG item_id;
@@ -1266,8 +1834,58 @@ static BOOL demo_handle_menu_selection(ULONG menu_number,
                     (UWORD)RLV_ELLIPSIS_HORIZONTAL_CLIP;
                 changed = TRUE;
             }
+        } else if (cmd == (UWORD)DEMO_MENU_CMD_TITLEFILL) {
+            if (demo_apply_title_fill_choice(control, win, val)) {
+#if !defined(RLV_ENABLE_ADAPTIVE_TITLE_PEN) \
+    || (RLV_ENABLE_ADAPTIVE_TITLE_PEN == 0)
+                demo_update_status_text(win, "Title fill updated");
+#else
+                if (val != (UWORD)RLV_TITLE_FILL_ADAPTIVE_BLEND) {
+                    demo_update_status_text(win, "Title fill updated");
+                }
+#endif
+            }
+        } else if (cmd == (UWORD)DEMO_MENU_CMD_SELFILL) {
+            if (demo_apply_selection_fill_choice(control, win, val)) {
+#if !defined(RLV_ENABLE_ADAPTIVE_SELECTION_PEN) \
+    || (RLV_ENABLE_ADAPTIVE_SELECTION_PEN == 0)
+                demo_update_status_text(win, "Selection colour updated");
+#else
+                if (val != (UWORD)RLV_SELECTION_FILL_ADAPTIVE) {
+                    demo_update_status_text(win, "Selection colour updated");
+                }
+#endif
+            }
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0)
+        } else if (cmd == (UWORD)DEMO_MENU_CMD_ROWBACKDROP) {
+            (VOID)demo_apply_row_backdrop_choice(control, win,
+                                                 &g_demo_screen_pens, val);
+#endif
+        } else if (cmd == (UWORD)DEMO_MENU_CMD_DIVPEN) {
+            (VOID)demo_apply_divider_pen_choice(control, win, val);
+        } else if (cmd == (UWORD)DEMO_MENU_CMD_VISUAL) {
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0)
+            (VOID)demo_apply_visual_preset_choice(control, win,
+                                                  &g_demo_screen_pens, val);
+#else
+            (VOID)demo_apply_visual_preset_choice(control, win, 0, val);
+#endif
         } else if (cmd == (UWORD)DEMO_MENU_CMD_RESET) {
             demo_init_default_settings(&g_demo_pending);
+            /* Same resolve order as Full Adaptive / Standard presets. */
+            (VOID)demo_apply_title_fill_choice(control,
+                                               win,
+                                               g_demo_pending.title_fill_style);
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0)
+            (VOID)demo_apply_row_backdrop_choice(control,
+                                                 win,
+                                                 &g_demo_screen_pens,
+                                                 g_demo_pending.row_backdrop_mode);
+#endif
+            (VOID)demo_apply_selection_fill_choice(
+                control, win, g_demo_pending.selection_fill_mode);
+            (VOID)demo_apply_divider_pen_choice(
+                control, win, g_demo_pending.row_divider_pen_mode);
             changed = TRUE;
         }
 
@@ -1320,6 +1938,8 @@ static VOID demo_apply_display_settings(RLV_Control *control,
     rlv_set_row_display_mode(control, settings->row_display_mode);
     rlv_set_long_word_mode(control, settings->long_word_mode);
     rlv_set_ellipsis_flags(control, settings->ellipsis_flags);
+    /* Title first; selection + divider after row backdrop in recreate path. */
+    rlv_set_title_fill_style(control, settings->title_fill_style);
 }
 
 /*
@@ -2819,6 +3439,13 @@ static BOOL demo_recreate_control(RLV_Control **control_io,
     cfg.row_gap = settings->row_gap;
     cfg.row_divider_style = settings->divider_style;
     cfg.initial_expand = settings->initial_expand;
+    cfg.title_fill_style = settings->title_fill_style;
+    cfg.selection_fill_mode = settings->selection_fill_mode;
+    cfg.row_divider_pen_mode = settings->row_divider_pen_mode;
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0)
+    cfg.row_backdrop_mode = settings->row_backdrop_mode;
+    cfg.alternate_row_pen = demo_pick_caller_alternate_pen(pens);
+#endif
     if (!keyboard_enabled) {
         cfg.flags = RLV_CFG_NO_KEYBOARD;
     }
@@ -2847,9 +3474,15 @@ static BOOL demo_recreate_control(RLV_Control **control_io,
     }
 #endif
 
-    /* Display policies before set_bounds so the first layout is correct. */
+    /* Display policies before set_bounds so the first layout is correct.
+     * Visual pens: title (in display_settings) → rows → selection → divider. */
     demo_apply_display_settings(new_control, settings);
     demo_apply_policies(new_control);
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0)
+    demo_apply_row_backdrop(new_control, settings, pens);
+#endif
+    rlv_set_selection_fill_mode(new_control, settings->selection_fill_mode);
+    rlv_set_row_divider_pen_mode(new_control, settings->row_divider_pen_mode);
     if (preserve_expand) {
         demo_restore_expand_from_row_flags(new_control);
     }
@@ -2899,7 +3532,7 @@ static BOOL demo_apply_pending_settings(RLV_Control **control_io,
     demo_update_apply_enabled_state(win);
     demo_update_status_text(win, "Settings applied");
     RLV_LOGF("SETTINGS applied div=%u xpad=%u ypad=%u gap=%u "
-             "rowdisp=%u longword=%u ellip=0x%x initexp=%u",
+             "rowdisp=%u longword=%u ellip=0x%x initexp=%u titlefill=%u",
              (unsigned)g_demo_applied.divider_style,
              (unsigned)g_demo_applied.padding_x,
              (unsigned)g_demo_applied.padding_y,
@@ -2907,7 +3540,8 @@ static BOOL demo_apply_pending_settings(RLV_Control **control_io,
              (unsigned)g_demo_applied.row_display_mode,
              (unsigned)g_demo_applied.long_word_mode,
              (unsigned)g_demo_applied.ellipsis_flags,
-             (unsigned)g_demo_applied.initial_expand);
+             (unsigned)g_demo_applied.initial_expand,
+             (unsigned)g_demo_applied.title_fill_style);
     return TRUE;
 }
 
@@ -3244,6 +3878,11 @@ int main(int argc, char **argv)
         RLV_LOG("FAIL rlv_backend_v36_create");
         goto fail_window;
     }
+#if defined(RLV_NEED_ADAPTIVE_COLORMAP) && (RLV_NEED_ADAPTIVE_COLORMAP != 0)
+    if (win->WScreen != 0) {
+        rlv_backend_v36_set_colormap(backend, win->WScreen->ViewPort.ColorMap);
+    }
+#endif
 
     memset(&cfg, 0, sizeof(cfg));
     cfg.draw_ops = rlv_backend_v36_get_ops();
@@ -3254,6 +3893,12 @@ int main(int argc, char **argv)
     cfg.row_gap = g_demo_applied.row_gap;
     cfg.row_divider_style = g_demo_applied.divider_style;
     cfg.initial_expand = g_demo_applied.initial_expand;
+    cfg.title_fill_style = g_demo_applied.title_fill_style;
+    cfg.selection_fill_mode = g_demo_applied.selection_fill_mode;
+    cfg.row_divider_pen_mode = g_demo_applied.row_divider_pen_mode;
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0)
+    cfg.row_backdrop_mode = g_demo_applied.row_backdrop_mode;
+#endif
     cfg.flags = 0;
 
     control = rlv_create(&cfg);
@@ -3264,6 +3909,10 @@ int main(int argc, char **argv)
     RLV_LOG("control created");
 
     rlv_backend_v36_pens_from_drawinfo(dri, &pens);
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0)
+    g_demo_screen_pens = pens;
+    cfg.alternate_row_pen = demo_pick_caller_alternate_pen(&pens);
+#endif
     rlv_set_pens(control, &pens);
 
     if (!rlv_set_columns(control, columns, NUM_COLS)) {
@@ -3301,6 +3950,11 @@ int main(int argc, char **argv)
     demo_bounds_from_geom(&geom, &bounds);
     demo_apply_display_settings(control, &g_demo_applied);
     demo_apply_policies(control);
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0)
+    demo_apply_row_backdrop(control, &g_demo_applied, &pens);
+#endif
+    rlv_set_selection_fill_mode(control, g_demo_applied.selection_fill_mode);
+    rlv_set_row_divider_pen_mode(control, g_demo_applied.row_divider_pen_mode);
     rlv_set_bounds(control, &bounds);
     /* Single-control demo: first instance is initially active. */
     active_control = control;
@@ -3386,7 +4040,7 @@ int main(int argc, char **argv)
             if (class == IDCMP_CLOSEWINDOW) {
                 done = TRUE;
             } else if (class == IDCMP_MENUPICK) {
-                (VOID)demo_handle_menu_selection((ULONG)code, win);
+                (VOID)demo_handle_menu_selection((ULONG)code, win, control);
             } else if (class == IDCMP_REFRESHWINDOW) {
                 RLV_LOG("refresh message received");
                 if (g_demo_refresh_depth != 0) {

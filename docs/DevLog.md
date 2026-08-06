@@ -1,5 +1,89 @@
 # RichListview — Dev Log
 
+## 2026-08-06 — Adaptive divider Full Adaptive activation fix
+
+Audited adaptive body-row dividers against the colours-refactor report.
+Feature, paint helper, and config expand-once helper were already present.
+Fixed live Full Adaptive / recreate resolve order to
+title → rows → selection → divider, re-refresh divider after selection
+changes, and attach ColorMap via `RLV_NEED_ADAPTIVE_COLORMAP`. Status line
+reports divider fallback under Full Adaptive. Prefer
+`rich-listview-demo-adaptive` (stale `all-adaptive` binary lacks dividers).
+
+**Report:** `docs/RICHLISTVIEW_ADAPTIVE_DIVIDER_ACTIVATION_REPORT.md`
+
+## 2026-08-06 — Shared adaptive-colour engine + full adaptive mode
+
+Consolidated the three duplicated adaptive pen backends into
+`backends/rlv_adaptive_colour.*` gated by `RLV_ENABLE_ADAPTIVE_COLOURS`.
+Migrated row/title/selection policy onto the engine; added adaptive body-row
+divider pens (`RLV_ENABLE_ADAPTIVE_DIVIDERS`) and
+`rlv_config_apply_full_adaptive_colours`. New isolated target
+`rich-listview-demo-adaptive`.
+
+**Report:** `docs/RICHLISTVIEW_ADAPTIVE_COLOURS_REFACTOR_REPORT.md`
+
+## 2026-08-06 — Adaptive selection + title coexistence fix
+
+Adaptive selection stopped treating the adaptive title pen as an avoid
+colour. Title (~45% FILL) and selection (~65% FILL) share the same blend
+family, so the proximity reject forced SYSTEM selection whenever adaptive
+title was on.
+
+## 2026-08-06 — Optional adaptive selection fill
+
+Added compile-time `RLV_ENABLE_ADAPTIVE_SELECTION_PEN` and
+`RLV_SELECTION_FILL_ADAPTIVE`: blends DrawInfo `FILLPEN` with the primary
+row `BACKGROUNDPEN` via V39+ `ObtainBestPen`, with colour validation,
+selected-text contrast policy, and SYSTEM fallback. Independent of row /
+title adaptive pens. Demo Settings → Selection colour when compiled in.
+
+**Report:** `docs/RICHLISTVIEW_ADAPTIVE_SELECTION_PEN_IMPLEMENTATION_REPORT.md`
+
+## 2026-08-06 — Optional adaptive title-bar blend pen
+
+Added compile-time `RLV_ENABLE_ADAPTIVE_TITLE_PEN` and
+`RLV_TITLE_FILL_ADAPTIVE_BLEND`: blends DrawInfo `FILLPEN` (active window
+title / selected fill) with `BACKGROUNDPEN` via V39+ `ObtainBestPen`, with
+colour validation and grey/blue-stripe fallback. Independent of row
+adaptive pens. Demo Settings → Title fill → Adaptive blend when compiled in.
+
+**Report:** `docs/RICHLISTVIEW_ADAPTIVE_TITLE_PEN_IMPLEMENTATION_REPORT.md`
+
+## 2026-08-06 — Row divider / gap hairline fix
+
+With `row_gap >= 1`, solid/dotted row dividers were drawn on the last
+content pixel while the gap band still painted a background pixel below
+them, leaving a 1 px grey line above the next row fill. Dividers now
+occupy the first gap pixel; gap background restore skips that pixel.
+
+## 2026-08-06 — Adaptive row backdrop patterned fallback
+
+When `RLV_ROW_BACKDROP_ADAPTIVE` cannot acquire a shared pen (V37, reject,
+or adaptive not linked), effective mode is now
+`RLV_ROW_BACKDROP_ALTERNATE_PATTERN`: sparse FILLPEN stipple on
+BACKGROUNDPEN for odd logical rows with JAM1 body text. Selection and
+even rows remain solid.
+
+## 2026-08-06 — Optional adaptive alternating row backdrops
+
+Added compile-time `RLV_ENABLE_ALTERNATE_ROWS` / `RLV_ENABLE_ADAPTIVE_ROW_PEN`,
+`RLV_RowBackdropMode`, config + setters, logical-row parity rendering,
+and an Amiga V39+ adaptive darker-pen helper with colour validation and
+safe patterned fallback. Demo Settings → Row backdrop exercises the modes.
+
+**Report:** `docs/RICHLISTVIEW_ALTERNATE_ROWS_IMPLEMENTATION_REPORT.md`
+
+## 2026-08-06 — Configurable title-row fill patterns
+
+Added `RLV_TitleFillStyle` (solid default, grey/blue stripes, grey/white
+stripes), `RLV_Config.title_fill_style`, `rlv_set_title_fill_style` /
+`rlv_get_title_fill_style`, optional `fill_rect_pattern` draw op, internal
+descriptor table in `rlv_title_fill.c`, and `RLV_RENDER_HEADER_ONLY`.
+Demo Settings menu includes Title fill choices.
+
+**Report:** `docs/RICHLISTVIEW_TITLE_FILL_IMPLEMENTATION_REPORT.md`
+
 ## 2026-08-05 — Column-resize preview refinement (4 px snap, pair preview)
 
 Audited the working drag preview. Divider flash came from shrink-path

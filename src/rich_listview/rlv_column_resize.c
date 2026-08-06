@@ -3,9 +3,10 @@
  *
  * Two-column exchange: dragging the divider between columns L and R adjusts
  * only those widths so L+R stays constant and later columns keep the same X.
- * Live preview paints both affected header interiors (no full-header redraw,
- * no sort glyphs), a moving header divider, and a body-only reversible
- * COMPLEMENT guide — without rebuilding wrap/layout.
+ * Live preview paints both affected header interiors with the configured
+ * title fill (no full-header redraw, no sort glyphs), a moving header
+ * divider, and a body-only reversible COMPLEMENT guide — without rebuilding
+ * wrap/layout.
  */
 
 #include "rich_listview/rlv_internal.h"
@@ -364,22 +365,36 @@ static VOID rlv_cr_draw_preview_title(RLV_Control *c,
     }
 
     if (ops->push_clip != 0 && ops->push_clip(ctx, &clip)) {
-        ops->set_pens(ctx, c->pens.shine, c->pens.background);
-        ops->draw_text(ctx, tx, baseline, title, fit);
+        if (rlv_title_fill_is_patterned(c) && ops->draw_text_jam1 != 0) {
+            ops->set_pens(ctx, c->pens.text, c->pens.text);
+            ops->draw_text_jam1(ctx, tx, baseline, title, fit);
+        } else {
+            ops->set_pens(ctx, c->pens.shine,
+                          rlv_title_fill_text_back_pen(c));
+            ops->draw_text(ctx, tx, baseline, title, fit);
+        }
         if (ops->pop_clip != 0) {
             ops->pop_clip(ctx);
         }
     } else {
-        ops->set_pens(ctx, c->pens.shine, c->pens.background);
-        ops->draw_text(ctx, tx, baseline, title, fit);
+        if (rlv_title_fill_is_patterned(c) && ops->draw_text_jam1 != 0) {
+            ops->set_pens(ctx, c->pens.text, c->pens.text);
+            ops->draw_text_jam1(ctx, tx, baseline, title, fit);
+        } else {
+            ops->set_pens(ctx, c->pens.shine,
+                          rlv_title_fill_text_back_pen(c));
+            ops->draw_text(ctx, tx, baseline, title, fit);
+        }
     }
 }
 
 /*
  * Dedicated drag-preview header pass for the two affected columns.
  * Clears only the combined interior (fixed 3D outer bevels untouched),
- * paints both titles in shine-on-grey, draws the moving divider, and
- * never invokes the ordinary header renderer or sort indicator.
+ * fills with the configured title pattern, paints both titles, draws the
+ * moving divider, and never invokes the ordinary header renderer or sort
+ * indicator. Solid fill keeps shine-on-grey preview titles; patterned fills
+ * use transparent TEXTPEN like the committed header.
  */
 static VOID rlv_cr_paint_pair_preview(RLV_Control *c, WORD proposed_left_w)
 {
@@ -451,8 +466,7 @@ static VOID rlv_cr_paint_pair_preview(RLV_Control *c, WORD proposed_left_w)
         return;
     }
 
-    ops->set_pens(ctx, c->pens.background, c->pens.background);
-    ops->fill_rect(ctx, fx1, fy1, fx2, fy2);
+    rlv_title_fill_area(c, fx1, fy1, fx2, fy2);
 
     pad = (WORD)c->cell_padding_x;
     left_content_r = (WORD)(guide - 1);

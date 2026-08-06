@@ -63,9 +63,24 @@ typedef struct RLV_DrawOps
 {
     VOID  (*set_pens)(APTR ctx, UWORD front, UWORD back);
     VOID  (*fill_rect)(APTR ctx, WORD x1, WORD y1, WORD x2, WORD y2);
+    /*
+     * Optional patterned rectangular fill (area pattern). Restores a solid
+     * non-patterned RastPort fill state before return. NULL = use fill_rect
+     * with background only when patterns are requested.
+     */
+    VOID  (*fill_rect_pattern)(APTR ctx, WORD x1, WORD y1, WORD x2, WORD y2,
+                               UWORD front, UWORD back,
+                               const UWORD *pattern, UWORD pat_height_exp);
     VOID  (*draw_line)(APTR ctx, WORD x1, WORD y1, WORD x2, WORD y2);
     VOID  (*draw_text)(APTR ctx, WORD x, WORD baseline,
                        CONST_STRPTR text, UWORD length);
+    /*
+     * Optional JAM1 text (no BPen cell fill). NULL = unavailable; callers
+     * that need transparent text over patterned fills must fall back to
+     * draw_text (opaque background).
+     */
+    VOID  (*draw_text_jam1)(APTR ctx, WORD x, WORD baseline,
+                            CONST_STRPTR text, UWORD length);
     UWORD (*text_width)(APTR ctx, CONST_STRPTR text, UWORD length);
     UWORD (*text_fit)(APTR ctx, CONST_STRPTR text, UWORD length,
                       UWORD max_width); /* Phase 3; may be NULL until then */

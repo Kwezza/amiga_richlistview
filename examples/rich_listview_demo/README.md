@@ -8,11 +8,13 @@
 - Configurable data-row dividers: none, solid, or one-on/one-off dotted
 - Shared title/body horizontal and vertical cell padding
 - **Settings** menu selects pending divider, X/Y padding, row-gap,
-  row-display mode, long-word mode, and ellipsis flags (same Apply
-  workflow as before); **Apply** commits them in one recreate + full
-  repaint. Apply stays disabled while pending matches the settings
-  currently on the ListView. Defaults: Collapsible, Preserve clipping,
-  collapsed-content ellipsis on, horizontal ellipsis off.
+  row-display mode, long-word mode, and ellipsis flags; **Apply** commits
+  those in one recreate + full repaint. Title fill changes redraw the
+  header immediately. Apply stays disabled while pending matches the
+  settings currently on the ListView. Defaults: Collapsible, Preserve
+  clipping, collapsed-content ellipsis on, horizontal ellipsis off, solid
+  title fill. With `RLV_ENABLE_ADAPTIVE_TITLE_PEN=1`, Title fill also offers
+  Adaptive blend.
 - One-pixel `SHADOWPEN` outer outline
 - Manually drawn viewport (no GadTools `LISTVIEW_KIND`)
 - Variable-height logical rows with pixel-measured word wrapping
@@ -163,6 +165,37 @@ Settings menu groups (pending until **Apply**):
 | Start rows | All open / All collapsed | All open |
 | Long words | Preserve clipping / Wrap by character | Preserve clipping |
 | Ellipsis | Hidden collapsed text; Horizontally clipped | collapsed on; horizontal off |
+| Title fill | Solid / Grey-blue stripes / Grey-white stripes / Blue-grey checkerboard / Sparse blue stipple / Wide grey-blue stripes / Adaptive blend *(when `RLV_ENABLE_ADAPTIVE_TITLE_PEN=1`)* | Solid |
+| Selection colour | System / Adaptive blend *(when `RLV_ENABLE_ADAPTIVE_SELECTION_PEN=1`)* | System |
+| Row divider colour | System / Adaptive *(when `RLV_ENABLE_ADAPTIVE_DIVIDERS=1`)* | System |
+| Visual colours | Standard / Full Adaptive / Custom | Standard |
+| Row backdrop *(when `RLV_ENABLE_ALTERNATE_ROWS=1`)* | Standard / Caller pen stripes / Adaptive darker *(when adaptive compiled)* | Standard |
+
+Title fill uses screen `DrawInfo` pens (`BACKGROUNDPEN`, `FILLPEN`,
+`SHINEPEN`). Adaptive blend (optional) mixes `FILLPEN` with `BACKGROUNDPEN`
+through a shared pen when graphics.library is V39+ and validation accepts
+the colour; otherwise it falls back to grey/blue stripes and the status
+line notes the fallback. The demo applies title-fill menu changes
+immediately with `rlv_set_title_fill_style` plus a header-only redraw;
+invalid values fall back to solid. Column-resize drag preview uses the
+same fill; solid titles stay shine-on-grey during drag, patterned fills
+use normal header text. The Adaptive blend menu item is omitted when the
+feature macro is off.
+
+Selection colour (optional adaptive build) defaults to Workbench `FILLPEN`.
+Adaptive blend softens selection toward the primary row background (65/35);
+failure falls back to system selection and the status line notes that.
+Menu Adaptive item is omitted when the feature macro is off. Changes apply
+immediately with a viewport-only redraw.
+
+Row backdrop (optional build) stripes **odd source logical rows**. For
+caller-supplied stripes the demo borrows a DrawInfo pen: `SHADOWPEN` when it
+is distinct from both background and text, otherwise `FILLPEN` (typical on
+RTG where shadow is pure black). Adaptive mode asks for a shared darker pen
+and falls back to a sparse FILLPEN stipple (pattern mode, JAM1 text) when
+graphics.library is below V39, ColorMap is missing, or validation rejects
+the colour; the status line reports that fallback. Menu items are omitted
+when the corresponding feature macro is off.
 
 Behaviour matrix (acceptance criteria):
 
@@ -301,6 +334,7 @@ make rich-listview-demo-sort
 make rich-listview-demo-colresize
 make rich-listview-demo-sort-resize
 make rich-listview-demo-sort-resize-log
+make rich-listview-demo-adaptive
 make rich-listview-demo-console
 ```
 

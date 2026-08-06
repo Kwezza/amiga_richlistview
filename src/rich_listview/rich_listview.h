@@ -107,9 +107,28 @@
  *   rlv_set_ellipsis_flags -- independent COLLAPSED_CONTENT and HORIZONTAL_CLIP
  *     markers (three hand-drawn dots, not three periods). Default is
  *     COLLAPSED_CONTENT on; HORIZONTAL_CLIP off.
+ *   RLV_Config.title_fill_style / rlv_set_title_fill_style -- SOLID (default),
+ *     GREY_BLUE_STRIPES, GREY_WHITE_STRIPES, BLUE_GREY_CHECKERBOARD,
+ *     SPARSE_BLUE_STIPPLE, WIDE_GREY_BLUE_STRIPES using screen DrawInfo pens.
+ *     ADAPTIVE_BLEND (RLV_ENABLE_ADAPTIVE_TITLE_PEN) blends FILLPEN with
+ *     BACKGROUNDPEN via ObtainBestPen; falls back to GREY_BLUE_STRIPES.
+ *
+ * Optional alternating row backdrops (RLV_ENABLE_ALTERNATE_ROWS, default off):
+ *   RLV_Config.row_backdrop_mode / rlv_set_row_backdrop -- STANDARD (default),
+ *     ALTERNATE_PEN (borrowed pen), ADAPTIVE (RLV_ENABLE_ADAPTIVE_ROW_PEN),
+ *     or ALTERNATE_PATTERN (sparse fill/background stipple + JAM1 text).
+ *   ADAPTIVE falls back to ALTERNATE_PATTERN when the shared pen is
+ *   unavailable. Stripes by source logical row index; selection stays solid.
+ *
+ * Optional selection fill (RLV_ENABLE_ADAPTIVE_SELECTION_PEN, default off):
+ *   RLV_Config.selection_fill_mode / rlv_set_selection_fill_mode -- SYSTEM
+ *     (default Workbench FILLPEN) or ADAPTIVE (blend FILLPEN with the primary
+ *     normal row BACKGROUNDPEN via ObtainBestPen). Adaptive success is not
+ *     guaranteed; failure falls back to SYSTEM. Does not mutate DrawInfo pens.
  */
 
 #include "rich_listview/rlv_draw.h"
+#include "rich_listview/rlv_features.h"
 
 #include <exec/types.h>
 #include <graphics/gfx.h>
@@ -143,6 +162,58 @@ typedef enum RLV_RowDividerStyle
     RLV_ROW_DIVIDER_SOLID,
     RLV_ROW_DIVIDER_DOTTED
 } RLV_RowDividerStyle;
+
+/* Title-row (column header) interior fill. Default: solid grey background. */
+typedef enum RLV_TitleFillStyle
+{
+    RLV_TITLE_FILL_SOLID = 0,
+    RLV_TITLE_FILL_GREY_BLUE_STRIPES = 1,
+    RLV_TITLE_FILL_GREY_WHITE_STRIPES = 2,
+    RLV_TITLE_FILL_BLUE_GREY_CHECKERBOARD = 3,
+    RLV_TITLE_FILL_SPARSE_BLUE_STIPPLE = 4,
+    RLV_TITLE_FILL_WIDE_GREY_BLUE_STRIPES = 5,
+    /*
+     * Optional V39+ blended solid title pen (FILLPEN + BACKGROUNDPEN).
+     * Requires RLV_ENABLE_ADAPTIVE_TITLE_PEN; otherwise normalizes to
+     * GREY_BLUE_STRIPES. Acquisition failure also falls back to that pattern.
+     */
+    RLV_TITLE_FILL_ADAPTIVE_BLEND = 6
+} RLV_TitleFillStyle;
+
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0)
+/* Body-row backdrop mode. Default: single-colour STANDARD. */
+typedef enum RLV_RowBackdropMode
+{
+    RLV_ROW_BACKDROP_STANDARD = 0,
+    RLV_ROW_BACKDROP_ALTERNATE_PEN,
+    RLV_ROW_BACKDROP_ADAPTIVE,
+    /* Sparse FILLPEN stipple on BACKGROUNDPEN; body text uses JAM1. */
+    RLV_ROW_BACKDROP_ALTERNATE_PATTERN
+} RLV_RowBackdropMode;
+#endif
+
+/*
+ * Selected-row fill colour policy. Default: Workbench FILLPEN / FILLTEXTPEN.
+ * ADAPTIVE requires RLV_ENABLE_ADAPTIVE_SELECTION_PEN; otherwise normalizes
+ * to SYSTEM. Acquisition failure also falls back to SYSTEM.
+ */
+typedef enum RLV_SelectionFillMode
+{
+    RLV_SELECTION_FILL_SYSTEM = 0,
+    RLV_SELECTION_FILL_ADAPTIVE = 1
+} RLV_SelectionFillMode;
+
+/*
+ * Body-row horizontal divider pen policy. Default: pens.separator (SHADOWPEN).
+ * ADAPTIVE requires RLV_ENABLE_ADAPTIVE_DIVIDERS; otherwise normalizes to
+ * SYSTEM. Acquisition failure also falls back to SYSTEM. Does not affect
+ * column verticals, title frames, or resize guides.
+ */
+typedef enum RLV_RowDividerPenMode
+{
+    RLV_ROW_DIVIDER_PEN_SYSTEM = 0,
+    RLV_ROW_DIVIDER_PEN_ADAPTIVE = 1
+} RLV_RowDividerPenMode;
 
 /* RLV_Config.flags */
 #define RLV_CFG_NO_KEYBOARD  0x0001U  /* start with NAV_* disabled */
@@ -241,6 +312,17 @@ typedef struct RLV_Config
     UWORD flags;                        /* RLV_CFG_*; 0 = defaults */
     /* Appended: zero-init selects RLV_INITIAL_EXPAND_ALL_OPEN. */
     UWORD initial_expand;               /* RLV_InitialExpandMode */
+    /* Appended: zero-init selects RLV_TITLE_FILL_SOLID. */
+    UWORD title_fill_style;             /* RLV_TitleFillStyle */
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0)
+    /* Appended: zero-init selects RLV_ROW_BACKDROP_STANDARD. */
+    UWORD row_backdrop_mode;            /* RLV_RowBackdropMode */
+    UWORD alternate_row_pen;            /* borrowed when mode == ALTERNATE_PEN */
+#endif
+    /* Appended: zero-init selects RLV_SELECTION_FILL_SYSTEM. */
+    UWORD selection_fill_mode;          /* RLV_SelectionFillMode */
+    /* Appended: zero-init selects RLV_ROW_DIVIDER_PEN_SYSTEM. */
+    UWORD row_divider_pen_mode;         /* RLV_RowDividerPenMode */
 } RLV_Config;
 
 /* RLV_Row.flags */
@@ -575,9 +657,78 @@ UWORD rlv_get_long_word_mode(const RLV_Control *c);
 VOID rlv_set_ellipsis_flags(RLV_Control *c, UWORD flags);
 UWORD rlv_get_ellipsis_flags(const RLV_Control *c);
 
+/*
+ * Title-row fill style. Default RLV_TITLE_FILL_SOLID. Invalid values fall
+ * back to solid. Does not rebuild layout — repaint the header after changing
+ * (rlv_render with RLV_RENDER_HEADER_ONLY, or a full render).
+ * ADAPTIVE_BLEND resolves once (create / set_pens / set_title_fill_style);
+ * rlv_get_title_fill_style returns the requested style.
+ */
+VOID rlv_set_title_fill_style(RLV_Control *c, UWORD style);
+UWORD rlv_get_title_fill_style(const RLV_Control *c);
+#if defined(RLV_ENABLE_ADAPTIVE_TITLE_PEN) && (RLV_ENABLE_ADAPTIVE_TITLE_PEN != 0)
+/* Effective paint style after adaptive resolve (may be a pattern fallback). */
+UWORD rlv_get_title_fill_effective_style(const RLV_Control *c);
+#endif
+
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0)
+/*
+ * Body-row alternating backdrop. Default STANDARD (single background pen).
+ * ALTERNATE_PEN borrows alternate_pen (not released by RichListview).
+ * ADAPTIVE requires RLV_ENABLE_ADAPTIVE_ROW_PEN and V39+ graphics.library;
+ * falls back to ALTERNATE_PATTERN when unavailable. ALTERNATE_PATTERN paints
+ * odd logical rows with a sparse fill/background stipple and JAM1 text.
+ * Does not rebuild layout — repaint the viewport after changing. Invalid
+ * mode values are ignored.
+ */
+VOID rlv_set_row_backdrop(RLV_Control *c,
+                          UWORD mode,
+                          UWORD alternate_pen);
+UWORD rlv_get_row_backdrop_mode(const RLV_Control *c);
+/* Effective mode after validation / adaptive acquisition (may differ). */
+UWORD rlv_get_row_backdrop_effective_mode(const RLV_Control *c);
+#endif
+
+/*
+ * Selected-row fill mode. Default RLV_SELECTION_FILL_SYSTEM (FILLPEN).
+ * Invalid values resolve to SYSTEM. Does not rebuild layout — repaint the
+ * viewport (or selection rows) after changing. ADAPTIVE resolves once on
+ * create / set_pens / set_selection_fill_mode; success is not guaranteed.
+ * rlv_get_selection_fill_mode returns the requested mode.
+ */
+VOID rlv_set_selection_fill_mode(RLV_Control *c, UWORD mode);
+UWORD rlv_get_selection_fill_mode(const RLV_Control *c);
+#if defined(RLV_ENABLE_ADAPTIVE_SELECTION_PEN) \
+    && (RLV_ENABLE_ADAPTIVE_SELECTION_PEN != 0)
+/* Effective mode after adaptive resolve (SYSTEM when fallback). */
+UWORD rlv_get_selection_fill_effective_mode(const RLV_Control *c);
+#endif
+
+/*
+ * Body-row divider pen mode. Default RLV_ROW_DIVIDER_PEN_SYSTEM (separator).
+ * Invalid values resolve to SYSTEM. Does not rebuild layout — repaint after
+ * changing. ADAPTIVE resolves on create / set_pens / set mode; success is
+ * not guaranteed. Independent of RLV_RowDividerStyle (stroke style).
+ */
+VOID rlv_set_row_divider_pen_mode(RLV_Control *c, UWORD mode);
+UWORD rlv_get_row_divider_pen_mode(const RLV_Control *c);
+#if defined(RLV_ENABLE_ADAPTIVE_DIVIDERS) && (RLV_ENABLE_ADAPTIVE_DIVIDERS != 0)
+UWORD rlv_get_row_divider_pen_effective_mode(const RLV_Control *c);
+#endif
+
+/*
+ * Expand-once helper: set available adaptive colour fields on *cfg.
+ * Does not override row_divider_style. Individual fields remain
+ * authoritative after rlv_create; this is not a persistent mode.
+ * Compiled-out features are left at their zero-init / existing values.
+ */
+VOID rlv_config_apply_full_adaptive_colours(RLV_Config *cfg);
+
 /* flags: 0 = full (header + viewport + frame);
- * RLV_RENDER_VIEWPORT_ONLY = scroll/selection update without touching frame. */
+ * RLV_RENDER_VIEWPORT_ONLY = scroll/selection update without touching frame;
+ * RLV_RENDER_HEADER_ONLY = title row only (no viewport or outer frame). */
 #define RLV_RENDER_VIEWPORT_ONLY  (1UL << 0)
+#define RLV_RENDER_HEADER_ONLY    (1UL << 1)
 
 VOID rlv_render(RLV_Control *c, ULONG flags);
 

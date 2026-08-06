@@ -213,6 +213,34 @@ RLV_Control *rlv_create(const RLV_Config *cfg)
     if (cfg->initial_expand == (UWORD)RLV_INITIAL_EXPAND_ALL_COLLAPSED) {
         c->initial_expand = (UWORD)RLV_INITIAL_EXPAND_ALL_COLLAPSED;
     }
+#if defined(RLV_ENABLE_ADAPTIVE_TITLE_PEN) && (RLV_ENABLE_ADAPTIVE_TITLE_PEN != 0)
+    rlv_title_fill_init_from_config(c, cfg->title_fill_style);
+#else
+    c->title_fill_style =
+        rlv_title_fill_normalize(cfg->title_fill_style);
+#endif
+#if defined(RLV_ENABLE_ADAPTIVE_SELECTION_PEN) \
+    && (RLV_ENABLE_ADAPTIVE_SELECTION_PEN != 0)
+    rlv_selection_fill_init_from_config(c, cfg->selection_fill_mode);
+#else
+    c->selection_fill_requested =
+        rlv_selection_fill_normalize(cfg->selection_fill_mode);
+#endif
+#if defined(RLV_ENABLE_ADAPTIVE_DIVIDERS) && (RLV_ENABLE_ADAPTIVE_DIVIDERS != 0)
+    rlv_adaptive_divider_init_from_config(c, cfg->row_divider_pen_mode);
+#endif
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0)
+    {
+        UWORD backdrop_mode;
+        UWORD alt_pen;
+
+        backdrop_mode = (UWORD)RLV_ROW_BACKDROP_STANDARD;
+        alt_pen = 0;
+        backdrop_mode = rlv_alternate_rows_normalize_mode(cfg->row_backdrop_mode);
+        alt_pen = cfg->alternate_row_pen;
+        rlv_alternate_rows_init_from_config(c, backdrop_mode, alt_pen);
+    }
+#endif
     c->apply_initial_expand = TRUE;
     c->control_armed = FALSE;
     c->armed_row = -1;
@@ -250,6 +278,19 @@ VOID rlv_destroy(RLV_Control *control)
 #endif
 #if defined(RLV_ENABLE_SORTING) && (RLV_ENABLE_SORTING != 0)
     rlv_sort_free_maps(control);
+#endif
+#if defined(RLV_ENABLE_ADAPTIVE_TITLE_PEN) && (RLV_ENABLE_ADAPTIVE_TITLE_PEN != 0)
+    rlv_title_fill_teardown(control);
+#endif
+#if defined(RLV_ENABLE_ADAPTIVE_SELECTION_PEN) \
+    && (RLV_ENABLE_ADAPTIVE_SELECTION_PEN != 0)
+    rlv_selection_fill_teardown(control);
+#endif
+#if defined(RLV_ENABLE_ADAPTIVE_DIVIDERS) && (RLV_ENABLE_ADAPTIVE_DIVIDERS != 0)
+    rlv_adaptive_divider_teardown(control);
+#endif
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0)
+    rlv_alternate_rows_teardown(control);
 #endif
     rlv_platform_free(control);
 }
@@ -611,6 +652,59 @@ UWORD rlv_get_row_divider_style(const RLV_Control *c)
     return c->row_divider_style;
 }
 
+VOID rlv_set_row_divider_pen_mode(RLV_Control *c, UWORD mode)
+{
+    if (c == 0) {
+        return;
+    }
+#if defined(RLV_ENABLE_ADAPTIVE_DIVIDERS) && (RLV_ENABLE_ADAPTIVE_DIVIDERS != 0)
+    c->row_divider_pen_requested = rlv_row_divider_pen_normalize(mode);
+    rlv_adaptive_divider_refresh(c);
+#else
+    (void)mode;
+#endif
+}
+
+UWORD rlv_get_row_divider_pen_mode(const RLV_Control *c)
+{
+    if (c == 0) {
+        return (UWORD)RLV_ROW_DIVIDER_PEN_SYSTEM;
+    }
+#if defined(RLV_ENABLE_ADAPTIVE_DIVIDERS) && (RLV_ENABLE_ADAPTIVE_DIVIDERS != 0)
+    return c->row_divider_pen_requested;
+#else
+    return (UWORD)RLV_ROW_DIVIDER_PEN_SYSTEM;
+#endif
+}
+
+#if defined(RLV_ENABLE_ADAPTIVE_DIVIDERS) && (RLV_ENABLE_ADAPTIVE_DIVIDERS != 0)
+UWORD rlv_get_row_divider_pen_effective_mode(const RLV_Control *c)
+{
+    return rlv_row_divider_pen_effective_mode(c);
+}
+#endif
+
+VOID rlv_config_apply_full_adaptive_colours(RLV_Config *cfg)
+{
+    if (cfg == 0) {
+        return;
+    }
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0) \
+    && defined(RLV_ENABLE_ADAPTIVE_ROW_PEN) && (RLV_ENABLE_ADAPTIVE_ROW_PEN != 0)
+    cfg->row_backdrop_mode = (UWORD)RLV_ROW_BACKDROP_ADAPTIVE;
+#endif
+#if defined(RLV_ENABLE_ADAPTIVE_TITLE_PEN) && (RLV_ENABLE_ADAPTIVE_TITLE_PEN != 0)
+    cfg->title_fill_style = (UWORD)RLV_TITLE_FILL_ADAPTIVE_BLEND;
+#endif
+#if defined(RLV_ENABLE_ADAPTIVE_SELECTION_PEN) \
+    && (RLV_ENABLE_ADAPTIVE_SELECTION_PEN != 0)
+    cfg->selection_fill_mode = (UWORD)RLV_SELECTION_FILL_ADAPTIVE;
+#endif
+#if defined(RLV_ENABLE_ADAPTIVE_DIVIDERS) && (RLV_ENABLE_ADAPTIVE_DIVIDERS != 0)
+    cfg->row_divider_pen_mode = (UWORD)RLV_ROW_DIVIDER_PEN_ADAPTIVE;
+#endif
+}
+
 /*
  * Relayout transaction for a new outer control rectangle.
  *
@@ -712,6 +806,21 @@ VOID rlv_set_pens(RLV_Control *c, const struct RLV_Pens *pens)
         return;
     }
     c->pens = *pens;
+#if defined(RLV_ENABLE_ADAPTIVE_TITLE_PEN) && (RLV_ENABLE_ADAPTIVE_TITLE_PEN != 0)
+    rlv_title_fill_refresh(c);
+#endif
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0)
+    rlv_alternate_rows_refresh(c);
+#endif
+#if defined(RLV_ENABLE_ADAPTIVE_SELECTION_PEN) \
+    && (RLV_ENABLE_ADAPTIVE_SELECTION_PEN != 0)
+    /* After row resolve so alternate-row avoid-pen is current when present. */
+    rlv_selection_fill_refresh(c);
+#endif
+#if defined(RLV_ENABLE_ADAPTIVE_DIVIDERS) && (RLV_ENABLE_ADAPTIVE_DIVIDERS != 0)
+    /* After rows + selection so source and near-selection checks are current. */
+    rlv_adaptive_divider_refresh(c);
+#endif
 }
 
 VOID rlv_set_control_activation_policy(RLV_Control *c, UWORD policy)
@@ -840,6 +949,150 @@ UWORD rlv_get_ellipsis_flags(const RLV_Control *c)
     return c->ellipsis_flags;
 }
 
+VOID rlv_set_title_fill_style(RLV_Control *c, UWORD style)
+{
+    UWORD normalized;
+
+    if (c == 0) {
+        return;
+    }
+    normalized = rlv_title_fill_normalize(style);
+    if (c->title_fill_style == normalized) {
+#if defined(RLV_ENABLE_ADAPTIVE_TITLE_PEN) && (RLV_ENABLE_ADAPTIVE_TITLE_PEN != 0)
+        /* Re-resolve adaptive when still requested (pens/ColorMap may change). */
+        if (normalized == (UWORD)RLV_TITLE_FILL_ADAPTIVE_BLEND) {
+            rlv_title_fill_refresh(c);
+#if defined(RLV_ENABLE_ADAPTIVE_SELECTION_PEN) \
+    && (RLV_ENABLE_ADAPTIVE_SELECTION_PEN != 0)
+            rlv_selection_fill_refresh(c);
+#endif
+        }
+#endif
+        return;
+    }
+    c->title_fill_style = normalized;
+#if defined(RLV_ENABLE_ADAPTIVE_TITLE_PEN) && (RLV_ENABLE_ADAPTIVE_TITLE_PEN != 0)
+    rlv_title_fill_refresh(c);
+#if defined(RLV_ENABLE_ADAPTIVE_SELECTION_PEN) \
+    && (RLV_ENABLE_ADAPTIVE_SELECTION_PEN != 0)
+    rlv_selection_fill_refresh(c);
+#endif
+#endif
+    RLV_LOGF("TITLE_FILL style=%u", (unsigned)normalized);
+}
+
+UWORD rlv_get_title_fill_style(const RLV_Control *c)
+{
+    if (c == 0) {
+        return (UWORD)RLV_TITLE_FILL_SOLID;
+    }
+    return c->title_fill_style;
+}
+
+#if defined(RLV_ENABLE_ADAPTIVE_TITLE_PEN) && (RLV_ENABLE_ADAPTIVE_TITLE_PEN != 0)
+UWORD rlv_get_title_fill_effective_style(const RLV_Control *c)
+{
+    return rlv_title_fill_effective_style(c);
+}
+#endif
+
+#if defined(RLV_ENABLE_ALTERNATE_ROWS) && (RLV_ENABLE_ALTERNATE_ROWS != 0)
+
+VOID rlv_set_row_backdrop(RLV_Control *c,
+                          UWORD mode,
+                          UWORD alternate_pen)
+{
+    if (c == 0) {
+        return;
+    }
+    if (mode != (UWORD)RLV_ROW_BACKDROP_STANDARD
+        && mode != (UWORD)RLV_ROW_BACKDROP_ALTERNATE_PEN
+        && mode != (UWORD)RLV_ROW_BACKDROP_ADAPTIVE
+        && mode != (UWORD)RLV_ROW_BACKDROP_ALTERNATE_PATTERN) {
+        return;
+    }
+    rlv_alternate_rows_set_mode(c, mode, alternate_pen);
+#if defined(RLV_ENABLE_ADAPTIVE_SELECTION_PEN) \
+    && (RLV_ENABLE_ADAPTIVE_SELECTION_PEN != 0)
+    /* Re-validate adaptive selection against the new alternate pen. */
+    rlv_selection_fill_refresh(c);
+#endif
+#if defined(RLV_ENABLE_ADAPTIVE_DIVIDERS) && (RLV_ENABLE_ADAPTIVE_DIVIDERS != 0)
+    /* After selection so near-selection validation uses the final fill pen. */
+    rlv_adaptive_divider_refresh(c);
+#endif
+    RLV_LOGF("row_backdrop requested=%u effective=%u pen=%u",
+             (unsigned)c->row_backdrop_requested,
+             (unsigned)c->row_backdrop_effective,
+             (unsigned)c->alternate_row_pen);
+}
+
+UWORD rlv_get_row_backdrop_mode(const RLV_Control *c)
+{
+    if (c == 0) {
+        return (UWORD)RLV_ROW_BACKDROP_STANDARD;
+    }
+    return c->row_backdrop_requested;
+}
+
+UWORD rlv_get_row_backdrop_effective_mode(const RLV_Control *c)
+{
+    if (c == 0) {
+        return (UWORD)RLV_ROW_BACKDROP_STANDARD;
+    }
+    return c->row_backdrop_effective;
+}
+
+#endif /* RLV_ENABLE_ALTERNATE_ROWS */
+
+VOID rlv_set_selection_fill_mode(RLV_Control *c, UWORD mode)
+{
+    UWORD normalized;
+
+    if (c == 0) {
+        return;
+    }
+    normalized = rlv_selection_fill_normalize(mode);
+    if (c->selection_fill_requested == normalized) {
+#if defined(RLV_ENABLE_ADAPTIVE_SELECTION_PEN) \
+    && (RLV_ENABLE_ADAPTIVE_SELECTION_PEN != 0)
+        if (normalized == (UWORD)RLV_SELECTION_FILL_ADAPTIVE) {
+            rlv_selection_fill_refresh(c);
+#if defined(RLV_ENABLE_ADAPTIVE_DIVIDERS) && (RLV_ENABLE_ADAPTIVE_DIVIDERS != 0)
+            rlv_adaptive_divider_refresh(c);
+#endif
+        }
+#endif
+        return;
+    }
+    c->selection_fill_requested = normalized;
+#if defined(RLV_ENABLE_ADAPTIVE_SELECTION_PEN) \
+    && (RLV_ENABLE_ADAPTIVE_SELECTION_PEN != 0)
+    rlv_selection_fill_refresh(c);
+#endif
+#if defined(RLV_ENABLE_ADAPTIVE_DIVIDERS) && (RLV_ENABLE_ADAPTIVE_DIVIDERS != 0)
+    /* Selection fill is an avoid colour for adaptive body dividers. */
+    rlv_adaptive_divider_refresh(c);
+#endif
+    RLV_LOGF("SELECTION_FILL mode=%u", (unsigned)normalized);
+}
+
+UWORD rlv_get_selection_fill_mode(const RLV_Control *c)
+{
+    if (c == 0) {
+        return (UWORD)RLV_SELECTION_FILL_SYSTEM;
+    }
+    return c->selection_fill_requested;
+}
+
+#if defined(RLV_ENABLE_ADAPTIVE_SELECTION_PEN) \
+    && (RLV_ENABLE_ADAPTIVE_SELECTION_PEN != 0)
+UWORD rlv_get_selection_fill_effective_mode(const RLV_Control *c)
+{
+    return rlv_selection_fill_effective_mode(c);
+}
+#endif
+
 BOOL rlv_disclosure_ui_enabled(const RLV_Control *c)
 {
     if (c == 0) {
@@ -901,6 +1154,8 @@ VOID rlv_render(RLV_Control *c, ULONG flags)
     }
     if ((flags & RLV_RENDER_VIEWPORT_ONLY) != 0) {
         rlv_render_viewport(c);
+    } else if ((flags & RLV_RENDER_HEADER_ONLY) != 0) {
+        rlv_render_header_only(c);
     } else {
         rlv_render_full(c);
     }

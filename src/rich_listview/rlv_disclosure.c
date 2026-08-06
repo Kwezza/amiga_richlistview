@@ -243,11 +243,12 @@ VOID rlv_disclosure_paint(RLV_Control *c,
     expanded = rlv_is_row_expanded(c, logical_row);
 
     if (selected) {
-        back_pen = c->pens.selected_background;
-        frame_pen = enabled ? c->pens.selected_text : c->pens.separator;
+        back_pen = rlv_selection_fill_pen(c);
+        frame_pen = enabled ? rlv_selection_text_pen(c) : c->pens.separator;
         text_pen = frame_pen;
     } else {
-        back_pen = c->pens.background;
+        /* Match the logical-row backdrop (alternate rows when enabled). */
+        back_pen = rlv_row_normal_backdrop_pen(c, logical_row);
         frame_pen = enabled ? c->pens.text : c->pens.separator;
         text_pen = frame_pen;
     }

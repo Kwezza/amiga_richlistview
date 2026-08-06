@@ -294,6 +294,111 @@ Explicit `RLV_WRAP_WORD_OR_CHAR` and `RLV_WRAP_PATH` ignore the control-level lo
 - **Collapsed content** — final visible line of a text cell that has later wrap lines hidden by collapse (Collapsible + collapsed only).
 - **Horizontal clip** — text cell whose wrap stopped with undisplayed source on the same line (independent of collapse).
 
+### 2.11 Title-row fill patterns
+
+| API / config | Default | Notes |
+|--------------|---------|-------|
+| `RLV_Config.title_fill_style` | `RLV_TITLE_FILL_SOLID` | At `rlv_create` |
+| `rlv_set_title_fill_style` | (stored on instance) | Invalid values → solid |
+
+Built-in styles:
+
+- **Solid** — grey background (`BACKGROUNDPEN`); historical default.
+- **Grey / blue stripes** — vertical stripes from `BACKGROUNDPEN` and `FILLPEN`.
+- **Grey / white stripes** — vertical stripes from `BACKGROUNDPEN` and `SHINEPEN`.
+- **Blue / grey checkerboard** — 2x2 alternating `FILLPEN`/`BACKGROUNDPEN`.
+- **Sparse blue stipple** — grey-dominant staggered `FILLPEN` dots on `BACKGROUNDPEN`.
+- **Wide grey / blue stripes** — grey-dominant vertical pattern with one `FILLPEN` column per four columns.
+- **Adaptive blend** (`RLV_TITLE_FILL_ADAPTIVE_BLEND`) — optional solid colour
+  blending active-window title fill (`FILLPEN`) with `BACKGROUNDPEN` via
+  V39+ `ObtainBestPen`. Compile with `RLV_ENABLE_ADAPTIVE_TITLE_PEN=1`.
+  Acquisition or validation failure falls back to grey/blue stripes.
+  When the feature is not linked, the style normalizes to grey/blue stripes.
+
+Patterns use one area-pattern `RectFill` per header region; 3D bevel, dividers,
+sort glyphs, and title text are painted afterward. Column-resize drag preview
+uses the same title fill; solid fill keeps shine-on-grey preview titles,
+patterned fills use transparent `TEXTPEN` like the committed header.
+
+Patterns always use semantic screen pens from `DrawInfo`, never fixed palette
+indices, and the public API still accepts only the predefined integer styles
+above. Adaptive blend resolves once (create / `set_pens` / style change) and
+paints as a solid `fill_rect` — no RGB work in the header hot path.
+Repaint after runtime changes: `rlv_render(control,
+RLV_RENDER_HEADER_ONLY)` or full render. Invalid values fall back to solid and
+runtime changes do not invalidate layout. With adaptive compiled in,
+`rlv_get_title_fill_style` returns the requested style and
+`rlv_get_title_fill_effective_style` reports the resolved paint mode.
+
+### 2.12a Optional adaptive selection fill
+
+Compile-time:
+
+| Macro | Default | Notes |
+|-------|---------|-------|
+| `RLV_ENABLE_ADAPTIVE_SELECTION_PEN` | `0` | Independent; V39+ `ObtainBestPen` helper |
+
+Runtime modes (`RLV_SelectionFillMode`):
+
+| Mode | Meaning |
+|------|---------|
+| `RLV_SELECTION_FILL_SYSTEM` | Workbench `FILLPEN` / `FILLTEXTPEN` (default) |
+| `RLV_SELECTION_FILL_ADAPTIVE` | Soften FILLPEN toward primary row background |
+
+Blend uses **65% FILLPEN + 35% BACKGROUNDPEN** (primary normal row background
+only — not odd/even alternate colours). Acquisition, validation, or poor
+selected-text contrast falls back to SYSTEM. Owned adaptive pens are stored
+separately so `pens.selected_background` remains the system FILLPEN for
+title/row helpers. Paint paths use `rlv_selection_fill_pen` /
+`rlv_selection_text_pen`. Resolve once on create / `set_pens` / mode change;
+no RGB work in the selection hot path. Demo: Settings → Selection colour.
+
+### 2.12b Shared adaptive-colour engine and body-row divider pens
+
+All adaptive ObtainBestPen / RGB helpers live in
+`backends/rlv_adaptive_colour.o` behind `RLV_ENABLE_ADAPTIVE_COLOURS`
+(auto-enabled when any adaptive feature is on). Feature gates require the
+engine (`#error` otherwise).
+
+Body-row horizontal dividers may use `RLV_ROW_DIVIDER_PEN_ADAPTIVE`
+(`RLV_ENABLE_ADAPTIVE_DIVIDERS`): a softer darkening of the alternate-row
+backdrop (or background) toward `SHADOWPEN`, falling back to
+`pens.separator`. Column verticals and title frames are unchanged.
+`rlv_config_apply_full_adaptive_colours` expands available adaptive fields
+once into an `RLV_Config`. Isolated build: `make rich-listview-demo-adaptive`.
+
+See `docs/RICHLISTVIEW_ADAPTIVE_COLOURS_REFACTOR_REPORT.md`.
+
+### 2.12 Optional alternating row backdrops
+
+Compile-time:
+
+| Macro | Default | Notes |
+|-------|---------|-------|
+| `RLV_ENABLE_ALTERNATE_ROWS` | `0` | Lightweight odd/even logical-row pens |
+| `RLV_ENABLE_ADAPTIVE_ROW_PEN` | `0` | Requires alternate rows; V39+ `ObtainBestPen` helper |
+
+Runtime modes (`RLV_RowBackdropMode`, available when alternate rows are on):
+
+| Mode | Meaning |
+|------|---------|
+| `RLV_ROW_BACKDROP_STANDARD` | Single `background` pen (default; unchanged appearance) |
+| `RLV_ROW_BACKDROP_ALTERNATE_PEN` | Odd source logical rows use a borrowed caller pen |
+| `RLV_ROW_BACKDROP_ADAPTIVE` | Attempt a subtle darker shared pen; fall back to pattern |
+| `RLV_ROW_BACKDROP_ALTERNATE_PATTERN` | Odd rows: sparse FILLPEN stipple on BACKGROUNDPEN + JAM1 text |
+
+API: `RLV_Config.row_backdrop_mode` / `alternate_row_pen`,
+`rlv_set_row_backdrop`, `rlv_get_row_backdrop_mode`,
+`rlv_get_row_backdrop_effective_mode`.
+
+Rules: stripe by **source logical row index** (wrapped fragments share one
+backdrop); selected rows keep solid `selected_background`; empty viewport
+space and the title row stay on the normal background; adaptive ownership
+is released on destroy / mode change; caller pens are never released.
+Adaptive success depends on actual ColorMap colours, not bitmap depth alone.
+When adaptive acquisition fails (or adaptive code is not linked), effective
+mode is `ALTERNATE_PATTERN` rather than `STANDARD`.
+
 ## 3. How the compile system selects what you pay for
 
 Classic Amiga binaries are size-sensitive. RichListview keeps optional cost out of normal builds in three ways: **explicit object lists**, **compile-time feature macros**, and **isolated object trees** so differently configured objects never mix.
@@ -309,6 +414,7 @@ rlv.o
 rlv_layout.o
 rlv_wrap.o
 rlv_render.o
+rlv_title_fill.o
 rlv_checkbox.o
 rlv_input.o
 rlv_scroll.o
@@ -331,6 +437,10 @@ rlv_disclosure.o
 | `rlv_bench.o` | `rich-listview-demo-bench` only |
 | `rlv_sort.o` | `rich-listview-demo-sort` only (`RLV_ENABLE_SORTING=1`) |
 | `rlv_column_resize.o` | `*-colresize` / `*-sort-resize` (`RLV_ENABLE_COLUMN_RESIZE=1`) |
+| `rlv_alternate_rows.o` | When `RLV_ENABLE_ALTERNATE_ROWS=1` |
+| `rlv_adaptive_divider.o` | Always (policy gated by `RLV_ENABLE_ADAPTIVE_DIVIDERS`) |
+| `backends/rlv_adaptive_colour.o` | When `RLV_ENABLE_ADAPTIVE_COLOURS=1` (auto if any adaptive feature) |
+| `rlv_selection_fill.o` | Always (normalize + resolve; RGB gated) |
 
 Legacy GadTools enhancer objects, ASCII formatters, binders, selection adapters, and `clv_cellctl_*` are **not part of this repository** and are never linked.
 
@@ -343,6 +453,12 @@ Legacy GadTools enhancer objects, ASCII formatters, binders, selection adapters,
 | `RLV_ENABLE_EXPANDABLE_ROWS` | `1` | Link expand/disclosure modules; compact collapsed rows |
 | `RLV_ENABLE_SORTING` | `0` | Link `rlv_sort.o`; view-order sorting API |
 | `RLV_ENABLE_COLUMN_RESIZE` | `0` | Link `rlv_column_resize.o`; interactive resize |
+| `RLV_ENABLE_ALTERNATE_ROWS` | `0` | Link `rlv_alternate_rows.o`; row backdrop modes |
+| `RLV_ENABLE_ADAPTIVE_COLOURS` | `0` | Shared adaptive-colour engine; auto-on with any feature |
+| `RLV_ENABLE_ADAPTIVE_ROW_PEN` | `0` | Requires alternate rows + engine |
+| `RLV_ENABLE_ADAPTIVE_TITLE_PEN` | `0` | Requires engine |
+| `RLV_ENABLE_ADAPTIVE_SELECTION_PEN` | `0` | Requires engine |
+| `RLV_ENABLE_ADAPTIVE_DIVIDERS` | `0` | Requires engine; body-row divider pen only |
 | `RLV_ENABLE_LOGGING` | off | Logger APIs become real; macros expand to writes |
 | `RLV_ENABLE_BENCHMARKS` | off | Benchmark instrumentation and `rlv_bench.c` |
 

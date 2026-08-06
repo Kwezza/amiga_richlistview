@@ -37,6 +37,7 @@ struct RLV_BackendV36
 {
     struct RastPort *rp;
     struct TextFont *font; /* borrowed */
+    struct ColorMap *colormap; /* borrowed; for adaptive pen helper */
     RLV_V36ClipState clip;
 };
 
@@ -54,11 +55,16 @@ struct RLV_BackendV36
 
 static VOID rlv_v36_set_pens(APTR ctx, UWORD front, UWORD back);
 static VOID rlv_v36_fill_rect(APTR ctx, WORD x1, WORD y1, WORD x2, WORD y2);
+static VOID rlv_v36_fill_rect_pattern(APTR ctx, WORD x1, WORD y1, WORD x2, WORD y2,
+                                      UWORD front, UWORD back,
+                                      const UWORD *pattern, UWORD pat_height_exp);
 static VOID rlv_v36_draw_line(APTR ctx, WORD x1, WORD y1, WORD x2, WORD y2);
 static VOID rlv_v36_draw_dotted_hline(APTR ctx, WORD x1, WORD x2, WORD y);
 static VOID rlv_v36_draw_xor_vline(APTR ctx, WORD x, WORD y1, WORD y2);
 static VOID rlv_v36_draw_text(APTR ctx, WORD x, WORD baseline,
                               CONST_STRPTR text, UWORD length);
+static VOID rlv_v36_draw_text_jam1(APTR ctx, WORD x, WORD baseline,
+                                   CONST_STRPTR text, UWORD length);
 static UWORD rlv_v36_text_width(APTR ctx, CONST_STRPTR text, UWORD length);
 static UWORD rlv_v36_text_fit(APTR ctx, CONST_STRPTR text, UWORD length,
                               UWORD max_width);
@@ -77,8 +83,10 @@ static const RLV_DrawOps g_rlv_v36_ops =
 {
     rlv_v36_set_pens,
     rlv_v36_fill_rect,
+    rlv_v36_fill_rect_pattern,
     rlv_v36_draw_line,
     rlv_v36_draw_text,
+    rlv_v36_draw_text_jam1,
     rlv_v36_text_width,
     rlv_v36_text_fit,
     rlv_v36_push_clip,
@@ -159,6 +167,15 @@ VOID rlv_backend_v36_set_font(RLV_BackendV36 *backend,
     }
 }
 
+VOID rlv_backend_v36_set_colormap(RLV_BackendV36 *backend,
+                                  struct ColorMap *cm)
+{
+    if (backend == 0) {
+        return;
+    }
+    backend->colormap = cm;
+}
+
 const RLV_DrawOps *rlv_backend_v36_get_ops(void)
 {
     return &g_rlv_v36_ops;
@@ -168,6 +185,24 @@ APTR rlv_backend_v36_get_context(RLV_BackendV36 *backend)
 {
     return (APTR)backend;
 }
+
+#if defined(RLV_NEED_ADAPTIVE_COLORMAP) && (RLV_NEED_ADAPTIVE_COLORMAP != 0)
+struct RastPort *rlv_backend_v36_rastport(RLV_BackendV36 *backend)
+{
+    if (backend == 0) {
+        return 0;
+    }
+    return backend->rp;
+}
+
+struct ColorMap *rlv_backend_v36_colormap(RLV_BackendV36 *backend)
+{
+    if (backend == 0) {
+        return 0;
+    }
+    return backend->colormap;
+}
+#endif
 
 VOID rlv_backend_v36_pens_from_drawinfo(const struct DrawInfo *dri,
                                         RLV_Pens *out_pens)
@@ -190,6 +225,16 @@ VOID rlv_backend_v36_pens_from_drawinfo(const struct DrawInfo *dri,
     out_pens->shine = pens[SHINEPEN];
     out_pens->shadow = pens[SHADOWPEN];
     out_pens->separator = pens[SHADOWPEN];
+
+    RLV_LOGF("DrawInfo pens bg=%u text=%u fill=%u filltext=%u "
+             "shine=%u shadow=%u depth=%u",
+             (unsigned)out_pens->background,
+             (unsigned)out_pens->text,
+             (unsigned)out_pens->selected_background,
+             (unsigned)out_pens->selected_text,
+             (unsigned)out_pens->shine,
+             (unsigned)out_pens->shadow,
+             (unsigned)dri->dri_Depth);
 }
 
 static VOID rlv_v36_set_pens(APTR ctx, UWORD front, UWORD back)
@@ -256,6 +301,48 @@ static VOID rlv_v36_fill_rect(APTR ctx, WORD x1, WORD y1, WORD x2, WORD y2)
     /* RectFill uses APen only. */
     RLV_BENCH_COUNT(RLV_BENCH_COUNTER_BACKGROUND_FILLS);
     RectFill(rp, x1, y1, x2, y2);
+}
+
+static VOID rlv_v36_fill_rect_pattern(APTR ctx, WORD x1, WORD y1, WORD x2, WORD y2,
+                                      UWORD front, UWORD back,
+                                      const UWORD *pattern, UWORD pat_height_exp)
+{
+    RLV_BackendV36 *b;
+    struct RastPort *rp;
+    UBYTE old_mode;
+    UWORD old_fg;
+    UWORD old_bg;
+    UBYTE pat_exp;
+
+    b = (RLV_BackendV36 *)ctx;
+    rp = rlv_v36_rp(b);
+    if (rp == 0 || pattern == 0 || x2 < x1 || y2 < y1) {
+        return;
+    }
+    if (!rlv_v36_soft_intersect(b, &x1, &y1, &x2, &y2)) {
+        return;
+    }
+
+    old_mode = rp->DrawMode;
+    old_fg = rp->FgPen;
+    old_bg = rp->BgPen;
+
+    SetAPen(rp, front);
+    SetBPen(rp, back);
+    SetDrMd(rp, JAM2);
+    pat_exp = (UBYTE)pat_height_exp;
+    if (pat_exp > 15) {
+        pat_exp = 0;
+    }
+    SetAfPt(rp, (UWORD *)pattern, pat_exp);
+    RLV_BENCH_COUNT(RLV_BENCH_COUNTER_BACKGROUND_FILLS);
+    RectFill(rp, x1, y1, x2, y2);
+
+    /* Restore solid non-patterned fill state for later drawing. */
+    SetAfPt(rp, NULL, 0);
+    SetAPen(rp, old_fg);
+    SetBPen(rp, old_bg);
+    SetDrMd(rp, old_mode);
 }
 
 /* Cohen–Sutherland outcodes; Amiga Y grows downward (MinY = top). */
@@ -549,6 +636,57 @@ static VOID rlv_v36_draw_text(APTR ctx, WORD x, WORD baseline,
     RLV_BENCH_COUNT(RLV_BENCH_COUNTER_CELLS_DRAWN);
     Move(rp, x, baseline);
     Text(rp, (STRPTR)text, length);
+}
+
+static VOID rlv_v36_draw_text_jam1(APTR ctx, WORD x, WORD baseline,
+                                   CONST_STRPTR text, UWORD length)
+{
+    RLV_BackendV36 *b = (RLV_BackendV36 *)ctx;
+    struct RastPort *rp = rlv_v36_rp(b);
+    struct TextFont *font;
+    WORD glyph_top;
+    WORD glyph_bottom;
+    UBYTE old_mode;
+    UWORD old_fg;
+
+    if (rp == 0 || text == 0 || length == 0) {
+        return;
+    }
+
+    if (b != 0 && b->clip.soft_active) {
+        font = b->font;
+        if (font == 0 && rp->Font != 0) {
+            font = rp->Font;
+        }
+        if (font != 0) {
+            glyph_top = (WORD)(baseline - (WORD)font->tf_Baseline);
+            glyph_bottom = (WORD)(glyph_top + (WORD)font->tf_YSize - 1);
+        } else {
+            glyph_top = baseline;
+            glyph_bottom = baseline;
+        }
+        if (x > b->clip.soft.MaxX) {
+            return;
+        }
+        if (b->clip.soft_only) {
+            if (glyph_top < b->clip.soft.MinY
+                || glyph_bottom > b->clip.soft.MaxY) {
+                return;
+            }
+        } else if (glyph_bottom < b->clip.soft.MinY
+                   || glyph_top > b->clip.soft.MaxY) {
+            return;
+        }
+    }
+
+    old_mode = rp->DrawMode;
+    old_fg = rp->FgPen;
+    SetDrMd(rp, JAM1);
+    RLV_BENCH_COUNT(RLV_BENCH_COUNTER_CELLS_DRAWN);
+    Move(rp, x, baseline);
+    Text(rp, (STRPTR)text, length);
+    SetAPen(rp, old_fg);
+    SetDrMd(rp, old_mode);
 }
 
 static UWORD rlv_v36_text_width(APTR ctx, CONST_STRPTR text, UWORD length)

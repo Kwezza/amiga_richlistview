@@ -848,7 +848,7 @@ VOID rlv_sort_draw_indicator(RLV_Control *c,
     cy = (WORD)(header_top
                 + ((header_bottom - header_top) / 2));
 
-    ops->set_pens(ctx, c->pens.text, c->pens.background);
+    ops->set_pens(ctx, c->pens.text, rlv_title_fill_text_back_pen(c));
 
     if (c->sort_direction == (UWORD)RLV_SORT_ASC) {
         /* Up-pointing triangle (filled via horizontal spans). */
